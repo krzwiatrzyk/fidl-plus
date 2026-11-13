@@ -40,6 +40,8 @@ def client(api_receipt, html_receipt, tmp_path, monkeypatch):
     "/product?name=Bu%C5%82ka%20kajzerka",
     "/product?name=",
     "/login",
+    "/login?account_id=1",
+    "/accounts",
     "/receipt/TEST-API-1",
     "/receipt/TEST-HTML-1",
     "/receipt/TEST-HTML-1/print",
@@ -124,3 +126,48 @@ def test_token_upload_rejects_a_bad_file(client, payload):
     assert response.status_code == 200
     assert "Błąd" in response.text
     assert db.list_accounts() == before
+
+
+@pytest.fixture
+def two_accounts(client, api_receipt):
+    second = db.store_login({"access_token": "b", "refresh_token": "s"})
+    db.update_account(second, label="Żona")
+    db.upsert_receipts(second, [{**api_receipt, "id": "SPOUSE-1", "store": {"name": "Lidl Żony"}}])
+    return second
+
+
+def test_account_filter_limits_receipts_and_is_remembered(client, two_accounts):
+    everything = client.get("/receipts?account=all").text
+    assert "Lidl Żony" in everything and "Lidl Testowa 1" in everything
+    assert "Konto</th>" in everything
+
+    only_spouse = client.get(f"/receipts?account={two_accounts}").text
+    assert "Lidl Żony" in only_spouse and "Lidl Testowa 1" not in only_spouse
+
+    assert "Lidl Testowa 1" not in client.get("/receipts").text
+
+
+def test_dashboard_shows_spend_per_account(client, two_accounts):
+    body = client.get("/?account=all").text
+    assert "Żona" in body
+    assert "Wydatki" in body
+
+
+def test_rename_and_delete_account(client, two_accounts):
+    client.post(f"/accounts/{two_accounts}/rename", data={"label": "Anna"})
+    assert db.get_account(two_accounts)["label"] == "Anna"
+    assert "Anna" in client.get("/receipts?account=all").text
+
+    client.post(f"/accounts/{two_accounts}/delete")
+    assert db.get_account(two_accounts) is None
+    assert "SPOUSE-1" not in client.get("/receipts?account=all").text
+
+
+def test_login_status_reports_the_new_login(client, monkeypatch):
+    db.update_account(1, refresh_obtained_at="2026-01-01T00:00:00+00:00")
+    monkeypatch.setitem(app.login_state, "started_at", db.now())
+    monkeypatch.setitem(app.login_state, "running", True)
+    assert "Czekam" in client.get("/login/status").text
+
+    db.store_login({"access_token": "x", "refresh_token": "fresh"})
+    assert "Zalogowano" in client.get("/login/status").text

@@ -75,3 +75,32 @@ def sync_account(account_id: int) -> int:
     finally:
         state["running"] = False
         lock.release()
+
+
+# Lidl does not document it; the old login page assumed 30 days. A refresh
+# that rotates the token resets refresh_obtained_at, so a healthy account
+# never gets near this.
+REFRESH_TOKEN_DAYS = 30
+
+
+def account_status(account: dict) -> dict:
+    """Traffic-light state of an account's credentials for the UI."""
+    now = datetime.now(UTC)
+    expires = account.get("access_expires_at")
+    access_valid = bool(expires) and datetime.fromisoformat(expires) > now
+
+    if not account.get("refresh_token"):
+        return {"level": "error", "text": "Brak tokenów - zaloguj się", "access_valid": False}
+    if account.get("last_refresh_ok") == 0:
+        return {"level": "error", "text": "Wymaga ponownego logowania", "access_valid": access_valid}
+
+    obtained = account.get("refresh_obtained_at")
+    if obtained:
+        age = now - datetime.fromisoformat(obtained)
+        if age > timedelta(days=REFRESH_TOKEN_DAYS):
+            return {"level": "error", "text": "Refresh token prawdopodobnie wygasł",
+                    "access_valid": access_valid}
+        if age > timedelta(days=REFRESH_TOKEN_DAYS - 5):
+            return {"level": "warn", "text": "Refresh token wkrótce wygaśnie",
+                    "access_valid": access_valid}
+    return {"level": "ok", "text": "Zalogowano", "access_valid": access_valid}

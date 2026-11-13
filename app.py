@@ -4,6 +4,8 @@ Fidl Plus - web UI.
 Run:  python app.py
 Open: http://localhost:8000
 """
+import asyncio
+import contextlib
 import html
 import json
 import os
@@ -16,8 +18,8 @@ from datetime import UTC, datetime
 from urllib.parse import quote
 
 import uvicorn
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -90,6 +92,58 @@ NOVNC_URL = os.getenv("NOVNC_URL", "")
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _ago(value: str | None) -> str:
+    if not value:
+        return "nigdy"
+    seconds = (datetime.now(UTC) - datetime.fromisoformat(value)).total_seconds()
+    future = seconds < 0
+    seconds = abs(seconds)
+    if seconds < 60:
+        text = "chwilę"
+    elif seconds < 3600:
+        text = f"{int(seconds // 60)} min"
+    elif seconds < 86400:
+        text = f"{int(seconds // 3600)} godz."
+    else:
+        text = f"{int(seconds // 86400)} dni"
+    if text == "chwilę":
+        return "za chwilę" if future else "przed chwilą"
+    return f"za {text}" if future else f"{text} temu"
+
+
+def _localtime(value: str | None) -> str:
+    if not value:
+        return "-"
+    return datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+templates.env.filters["ago"] = _ago
+templates.env.filters["localtime"] = _localtime
+
+
+def accounts_with_status() -> list[dict]:
+    return [{**a, "status": services.account_status(a)} for a in db.list_accounts()]
+
+
+def selected_account(request: Request) -> int | None:
+    """Account chosen in the nav filter: ?account= wins, then the cookie."""
+    value = request.query_params.get("account", request.cookies.get("account", ""))
+    return int(value) if value.isdigit() else None
+
+
+templates.env.globals["nav_accounts"] = accounts_with_status
+templates.env.globals["selected_account"] = selected_account
+
+
+@app.middleware("http")
+async def remember_account_filter(request: Request, call_next):
+    response = await call_next(request)
+    if "account" in request.query_params:
+        response.set_cookie("account", request.query_params["account"], max_age=365 * 86400,
+                            samesite="lax")
+    return response
+
+
 _receipts_cache: dict = {"version": None, "receipts": []}
 
 
@@ -99,6 +153,15 @@ def load_receipts() -> list:
         receipts, _ = enrich_receipts(db.all_receipts())
         _receipts_cache.update(version=db.receipts_version, receipts=receipts)
     return _receipts_cache["receipts"]
+
+
+def scoped_receipts(request: Request) -> list:
+    """Receipts of the account picked in the filter, or of every account."""
+    account_id = selected_account(request)
+    receipts = load_receipts()
+    if account_id is None:
+        return receipts
+    return [r for r in receipts if r.get("_account_id") == account_id]
 
 
 def parse_price(val) -> float:
@@ -408,17 +471,25 @@ def search_products(receipts: list, query: str) -> list:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    receipts = load_receipts()
+    receipts = scoped_receipts(request)
     stats = get_stats(receipts)
     coupon_stats = get_coupon_stats(receipts)
     recent = sorted(receipts, key=lambda r: r.get("date", ""), reverse=True)[:20]
-    logged_in = any(a.get("refresh_token") for a in db.list_accounts())
+    accounts = accounts_with_status()
+
+    per_account = []
+    if len(accounts) > 1 and selected_account(request) is None:
+        for a in accounts:
+            own = [r for r in receipts if r.get("_account_id") == a["id"]]
+            per_account.append({**a, "receipts": len(own), "spent": sum(receipt_total(r) for r in own)})
+
     return templates.TemplateResponse(request=request, name="index.html", context={
         "request": request,
         "stats": stats,
         "coupon_stats": coupon_stats,
         "recent": recent,
-        "logged_in": logged_in,
+        "accounts": accounts,
+        "per_account": per_account,
     })
 
 
@@ -430,7 +501,7 @@ async def receipts_list(
     date_from: str = Query(""),
     date_to: str = Query(""),
 ):
-    all_receipts = load_receipts()
+    all_receipts = scoped_receipts(request)
     receipts = all_receipts
 
     # Filtrowanie
@@ -461,6 +532,7 @@ async def receipts_list(
         "date_from": date_from,
         "date_to": date_to,
         "all_stores": all_stores,
+        "show_account": selected_account(request) is None and len(db.list_accounts()) > 1,
         "parse_price": parse_price,
     })
 
@@ -518,7 +590,7 @@ async def receipt_print(request: Request, receipt_id: str):
 
 @app.get("/insights", response_class=HTMLResponse)
 async def insights(request: Request):
-    receipts = load_receipts()
+    receipts = scoped_receipts(request)
     data = get_insights(receipts)
     return templates.TemplateResponse(request=request, name="insights.html", context={
         "request": request,
@@ -529,7 +601,7 @@ async def insights(request: Request):
 
 @app.get("/top-products", response_class=HTMLResponse)
 async def top_products(request: Request):
-    receipts = load_receipts()
+    receipts = scoped_receipts(request)
     data = get_top_products(receipts)
     return templates.TemplateResponse(request=request, name="top_products.html", context={
         "request": request,
@@ -539,7 +611,7 @@ async def top_products(request: Request):
 
 @app.get("/search", response_class=HTMLResponse)
 async def search(request: Request, q: str = Query("")):
-    receipts = load_receipts()
+    receipts = scoped_receipts(request)
     results = search_products(receipts, q) if q else []
     return templates.TemplateResponse(request=request, name="search.html", context={
         "request": request,
@@ -550,7 +622,7 @@ async def search(request: Request, q: str = Query("")):
 
 @app.get("/product", response_class=HTMLResponse)
 async def product(request: Request, name: str = Query("")):
-    receipts = load_receipts()
+    receipts = scoped_receipts(request)
     history = get_product_history(receipts, name) if name else []
 
     # Chart data uses the promotional price, i.e. what was actually paid
@@ -575,11 +647,22 @@ async def product(request: Request, name: str = Query("")):
     })
 
 
+# One login at a time: there is a single Xvfb display and one callback file.
+_login_lock = threading.Lock()
+login_state: dict = {"started_at": None, "account_id": None, "running": False}
+
+
+def _parse_account_id(value) -> int | None:
+    return int(value) if str(value or "").isdigit() else None
+
+
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
+async def login_page(request: Request, account_id: str = Query("")):
+    account = db.get_account(_parse_account_id(account_id) or 0)
     return templates.TemplateResponse(request=request, name="login.html", context={
         "request": request,
-        "status": "",
+        "account": account,
+        "accounts": db.list_accounts(),
         "novnc_port": NOVNC_PORT,
         "novnc_url": NOVNC_URL,
     })
@@ -601,16 +684,16 @@ async def login_upload_token(request: Request):
             tokens = json.loads(content)
             if not isinstance(tokens, dict) or "access_token" not in tokens:
                 raise ValueError("brak pola access_token")
-            db.store_login(tokens)
+            db.store_login(tokens, _parse_account_id(form.get("account_id")))
             return HTMLResponse("""
                 <div id="token-upload-status" class="status-ok">
-                    Tokeny wgrane pomyślnie! <a href="/sync">Pobierz paragony</a>
+                    Tokeny wgrane pomyślnie! <a href="/accounts">Przejdź do kont</a>
                 </div>
             """)
         except Exception as e:
             return HTMLResponse(f"""
                 <div id="token-upload-status" class="alert alert-warn">
-                    Błąd: nieprawidłowy plik tokenów ({e})
+                    Błąd: nieprawidłowy plik tokenów ({html.escape(str(e))})
                 </div>
             """)
     return HTMLResponse("""
@@ -621,41 +704,102 @@ async def login_upload_token(request: Request):
 
 
 @app.post("/login/start", response_class=HTMLResponse)
-async def login_start(request: Request):
+async def login_start(account_id: str = Form("")):
     """Run browser_login.py in the background and return a status snippet."""
+    if not _login_lock.acquire(blocking=False):
+        return HTMLResponse("""
+            <div id="login-status" class="alert alert-warn">
+                Inne logowanie już trwa - dokończ je albo poczekaj aż wygaśnie.
+            </div>
+        """)
+
+    target = _parse_account_id(account_id)
+    login_state.update(started_at=db.now(), account_id=target, running=True)
+    command = [sys.executable, "browser_login.py", "--db"]
+    if target:
+        command += ["--account-id", str(target)]
+
     def run_login():
-        subprocess.run(
-            [sys.executable, "browser_login.py", "--db"],
-            cwd=os.path.dirname(os.path.abspath(__file__))
-        )
-    thread = threading.Thread(target=run_login, daemon=True)
-    thread.start()
+        try:
+            subprocess.run(command, cwd=os.path.dirname(os.path.abspath(__file__)))
+        finally:
+            login_state["running"] = False
+            _login_lock.release()
+
+    threading.Thread(target=run_login, daemon=True).start()
     return HTMLResponse("""
         <div id="login-status" class="status-running"
              hx-get="/login/status" hx-trigger="every 2s" hx-swap="outerHTML">
-            Otwieranie Chrome... zaloguj się w oknie przeglądarki.
+            Otwieranie przeglądarki... zaloguj się w jej oknie.
         </div>
     """)
 
 
 @app.get("/login/status", response_class=HTMLResponse)
 async def login_status():
-    logins = [a["refresh_obtained_at"] for a in db.list_accounts() if a.get("refresh_obtained_at")]
-    if logins:
-        age = datetime.now(UTC) - datetime.fromisoformat(max(logins))
-        if age.total_seconds() < 300:
-            return HTMLResponse("""
-                <div id="login-status" class="status-ok">
-                    Zalogowano! <a href="/">Przejdź do dashboardu</a>
-                    &nbsp;|&nbsp; <a href="/sync">Pobierz paragony</a>
-                </div>
-            """)
+    started = login_state["started_at"]
+    if started:
+        for account in db.list_accounts():
+            if login_state["account_id"] and account["id"] != login_state["account_id"]:
+                continue
+            if (account.get("refresh_obtained_at") or "") >= started:
+                return HTMLResponse(f"""
+                    <div id="login-status" class="status-ok">
+                        Zalogowano jako {html.escape(account["label"])}!
+                        <a href="/accounts">Przejdź do kont</a>
+                    </div>
+                """)
+    if not login_state["running"]:
+        return HTMLResponse("""
+            <div id="login-status" class="alert alert-warn">
+                Logowanie nie powiodło się albo przekroczono czas. Spróbuj ponownie.
+            </div>
+        """)
     return HTMLResponse("""
         <div id="login-status" class="status-running"
              hx-get="/login/status" hx-trigger="every 2s" hx-swap="outerHTML">
             Czekam na zalogowanie...
         </div>
     """)
+
+
+@app.get("/accounts", response_class=HTMLResponse)
+async def accounts_page(request: Request):
+    return templates.TemplateResponse(request=request, name="accounts.html", context={
+        "request": request,
+        "accounts": accounts_with_status(),
+        "progress": services.progress,
+    })
+
+
+@app.post("/accounts/{account_id}/refresh")
+async def account_refresh(account_id: int):
+    with contextlib.suppress(Exception):  # the error is recorded on the account
+        await asyncio.to_thread(services.refresh_account, account_id)
+    return RedirectResponse("/accounts", status_code=303)
+
+
+@app.post("/accounts/{account_id}/sync")
+async def account_sync(account_id: int):
+    def run():
+        with contextlib.suppress(Exception):  # the error lands in services.progress
+            services.sync_account(account_id)
+
+    threading.Thread(target=run, daemon=True).start()
+    return RedirectResponse("/accounts", status_code=303)
+
+
+@app.post("/accounts/{account_id}/rename")
+async def account_rename(account_id: int, label: str = Form(...)):
+    if label.strip():
+        db.update_account(account_id, label=label.strip())
+    return RedirectResponse("/accounts", status_code=303)
+
+
+@app.post("/accounts/{account_id}/delete")
+async def account_delete(account_id: int):
+    db.delete_account(account_id)
+    return RedirectResponse("/accounts", status_code=303)
 
 
 @app.get("/sync", response_class=HTMLResponse)

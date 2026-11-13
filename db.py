@@ -90,11 +90,14 @@ def get_account(account_id: int) -> dict | None:
 
 
 def update_account(account_id: int, **fields) -> None:
+    global receipts_version
     if not fields:
         return
     columns = ", ".join(f"{name} = ?" for name in fields)
     with connect() as conn:
         conn.execute(f"UPDATE accounts SET {columns} WHERE id = ?", (*fields.values(), account_id))
+    if "label" in fields:
+        receipts_version += 1  # receipts carry the label
 
 
 def delete_account(account_id: int) -> None:

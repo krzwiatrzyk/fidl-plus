@@ -108,3 +108,22 @@ def test_get_all_tickets_propagates_errors(monkeypatch):
     monkeypatch.setattr(api, "get_tickets", boom)
     with pytest.raises(RuntimeError):
         api.get_all_tickets()
+
+
+@pytest.mark.parametrize("fields, level", [
+    ({"refresh_token": None}, "error"),
+    ({"last_refresh_ok": 0}, "error"),
+    ({"refresh_obtained_at": "2000-01-01T00:00:00+00:00"}, "error"),
+    ({}, "ok"),
+])
+def test_account_status(fields, level):
+    account = {"refresh_token": "r", "last_refresh_ok": 1, "access_expires_at": None,
+               "refresh_obtained_at": db.now(), **fields}
+    assert services.account_status(account)["level"] == level
+
+
+def test_account_status_warns_before_refresh_token_expiry():
+    from datetime import UTC, datetime, timedelta
+    obtained = (datetime.now(UTC) - timedelta(days=services.REFRESH_TOKEN_DAYS - 2)).isoformat()
+    account = {"refresh_token": "r", "refresh_obtained_at": obtained}
+    assert services.account_status(account)["level"] == "warn"

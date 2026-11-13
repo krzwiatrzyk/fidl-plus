@@ -40,6 +40,7 @@
                 <tr>
                     <th>Data</th>
                     <th>Godzina</th>
+                    {% if show_account %}<th>Konto</th>{% endif %}
                     <th>Sklep</th>
                     <th>Produkty</th>
                     <th>Suma</th>
@@ -51,6 +52,7 @@
             <tr>
                 <td class="date-cell">{{ r.date[:10] if r.get('date') else '-' }}</td>
                 <td class="date-cell">{{ r.date[11:16] if r.get('date') and r.date|length > 10 else '-' }}</td>
+                {% if show_account %}<td><span class="badge badge-blue">{{ r._account_label }}</span></td>{% endif %}
                 <td class="store-cell">{{ r.get('store', {}).get('name', '-') }}</td>
                 <td><span class="badge badge-blue">{{ r.get('itemsLine', [])|length }} poz.</span></td>
                 <td class="amount">

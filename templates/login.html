@@ -5,6 +5,18 @@
 <div style="max-width:500px;margin:3rem auto;">
 <h1>Logowanie do Lidl Plus</h1>
 
+{% if account %}
+<div class="alert alert-info">
+    Ponowne logowanie dla konta <strong>{{ account.label }}</strong>.
+    Zaloguj się w Lidl Plus tym samym użytkownikiem.
+</div>
+{% elif accounts %}
+<div class="alert alert-info">
+    Dodajesz kolejne konto. Jeśli zalogujesz się na konto, które już jest
+    na liście, zostanie ono zaktualizowane zamiast zdublowane.
+</div>
+{% endif %}
+
 <div class="card">
     <h2>Metoda 1: Zaloguj się w przeglądarce</h2>
     {% if novnc_url or novnc_port %}
@@ -16,6 +28,7 @@
 
     <button class="btn btn-primary" style="width:100%;padding:.8rem;"
             hx-post="/login/start"
+            hx-vals='{"account_id": "{{ account.id if account else "" }}"}'
             hx-target="#login-status"
             hx-swap="outerHTML"
             onclick="window.open(novncUrl(), 'fidl-novnc');">
@@ -46,6 +59,7 @@
 
     <button class="btn btn-primary" style="width:100%;padding:.8rem;"
             hx-post="/login/start"
+            hx-vals='{"account_id": "{{ account.id if account else "" }}"}'
             hx-target="#login-status"
             hx-swap="outerHTML">
         Otwórz Chrome i zaloguj się
@@ -67,6 +81,12 @@
           hx-swap="outerHTML"
           hx-encoding="multipart/form-data"
           style="display:flex;flex-direction:column;gap:.75rem;">
+        <select name="account_id" style="font-size:.9rem;padding:.4rem;border:1px solid #d1d5db;border-radius:6px;">
+            <option value="">Nowe konto / rozpoznaj po użytkowniku</option>
+            {% for a in accounts %}
+            <option value="{{ a.id }}" {% if account and account.id == a.id %}selected{% endif %}>Zastąp tokeny: {{ a.label }}</option>
+            {% endfor %}
+        </select>
         <input type="file" name="token_file" accept=".json"
                style="font-size:.9rem;padding:.4rem;border:1px solid #d1d5db;border-radius:6px;">
         <button type="submit" class="btn btn-yellow" style="padding:.7rem;">
@@ -80,10 +100,10 @@
     <h2>Po zalogowaniu</h2>
     <p style="color:var(--muted);font-size:.9rem;line-height:1.6;margin-bottom:1rem;">
         Token jest ważny przez 1 godzinę. Aplikacja automatycznie go odświeża
-        używając refresh tokenu (ważnego 30 dni).
+        używając refresh tokenu. Stan wszystkich kont widać na stronie Konta.
     </p>
-    <a href="/sync" class="btn btn-yellow" style="text-decoration:none;display:inline-block;">
-        Pobierz paragony →
+    <a href="/accounts" class="btn btn-yellow" style="text-decoration:none;display:inline-block;">
+        Przejdź do kont →
     </a>
 </div>
 </div>
