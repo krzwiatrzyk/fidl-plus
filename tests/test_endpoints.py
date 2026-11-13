@@ -197,3 +197,34 @@ def test_search_redirects_to_products(client):
 def test_products_lists_everything_without_a_query(client):
     body = client.get("/products").text
     assert "Bułka kajzerka" in body and "Mleko" in body
+
+
+def test_without_a_date_range_everything_is_shown(client):
+    body = client.get("/receipts").text
+    assert "Lidl Testowa 1" in body and "Lidl Testowa 2" in body
+    assert "wszystkie dane" in body
+
+
+def test_date_range_limits_every_page_and_follows_you(client):
+    body = client.get("/receipts?date_from=2026-07-31&date_to=2026-07-31").text
+    assert "Lidl Testowa 1" in body and "Lidl Testowa 2" not in body
+
+    body = client.get("/").text
+    assert "Lidl Testowa 2" not in body
+    assert 'value="2026-07-31"' in body
+
+    body = client.get("/receipts?date_from=&date_to=").text
+    assert "Lidl Testowa 2" in body
+    assert "Lidl Testowa 2" in client.get("/receipts").text
+
+
+def test_date_range_ignores_garbage(client):
+    body = client.get("/receipts?date_from=yesterday").text
+    assert "Lidl Testowa 1" in body and "Lidl Testowa 2" in body
+
+
+def test_date_filter_keeps_other_params(client):
+    body = client.get("/products?q=kajzerka&sort=spend&page=2").text
+    assert '<input type="hidden" name="q" value="kajzerka">' in body
+    assert '<input type="hidden" name="sort" value="spend">' in body
+    assert 'name="page"' not in body

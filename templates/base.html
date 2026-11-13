@@ -276,6 +276,10 @@
         .dot-ok { background: #34d399; }
         .dot-warn { background: #fbbf24; }
         .dot-error { background: #f87171; }
+        .date-filter { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-bottom: 1.25rem; font-size: .85rem; color: var(--muted); }
+        .date-filter input[type=date] { padding: .3rem .5rem; border: 2px solid var(--border); border-radius: 8px; font-size: .85rem; }
+        .date-filter a.btn { text-decoration: none; }
+        .date-filter-hint { font-style: italic; }
         .btn-sm { padding: .35rem .8rem; font-size: .8rem; }
         .btn-ghost { background: var(--border); color: var(--text); }
         .btn-danger { background: var(--red); color: white; }
@@ -314,6 +318,22 @@
     <a href="/accounts" style="color:rgba(255,255,255,.7); font-size:.85rem;">Konta</a>
 </nav>
 <div class="container">
+    {% if request.url.path in date_filter_paths %}
+    {% set date_from, date_to = date_range(request) %}
+    <form method="get" action="{{ request.url.path }}" class="date-filter">
+        {% for key, value in request.query_params.multi_items() if key not in ("page", "date_from", "date_to") %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endfor %}
+        <label>Okres od <input type="date" name="date_from" value="{{ date_from }}"></label>
+        <label>do <input type="date" name="date_to" value="{{ date_to }}"></label>
+        <button class="btn btn-sm btn-primary" type="submit">Filtruj</button>
+        {% if date_from or date_to %}
+        <a href="{{ url_with(request, date_from='', date_to='') }}" class="btn btn-sm btn-ghost">Wszystko</a>
+        {% else %}
+        <span class="date-filter-hint">wszystkie dane</span>
+        {% endif %}
+    </form>
+    {% endif %}
     {% block content %}{% endblock %}
 </div>
 </body>

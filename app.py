@@ -188,12 +188,40 @@ templates.env.globals["selected_account"] = selected_account
 templates.env.globals["url_with"] = url_with
 
 
+DATE_KEYS = ("date_from", "date_to")
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def date_range(request: Request) -> tuple[str, str]:
+    """(date_from, date_to) as YYYY-MM-DD, "" when unset: the query wins, then the session cookie."""
+    values = []
+    for key in DATE_KEYS:
+        value = request.query_params.get(key, request.cookies.get(key, ""))
+        values.append(value if _DATE_RE.fullmatch(value) else "")
+    return values[0], values[1]
+
+
+templates.env.globals["date_range"] = date_range
+templates.env.globals["date_filter_paths"] = {"/", "/receipts", "/products", "/product",
+                                              "/insights", "/top-products"}
+
+
 @app.middleware("http")
-async def remember_account_filter(request: Request, call_next):
+async def remember_filters(request: Request, call_next):
     response = await call_next(request)
     if "account" in request.query_params:
         response.set_cookie("account", request.query_params["account"], max_age=365 * 86400,
                             samesite="lax")
+    # A session cookie: the range follows you between pages but is gone after
+    # the browser closes, so an old range never silently hides data.
+    for key in DATE_KEYS:
+        if key not in request.query_params:
+            continue
+        value = request.query_params[key]
+        if _DATE_RE.fullmatch(value):
+            response.set_cookie(key, value, samesite="lax")
+        else:
+            response.delete_cookie(key)
     return response
 
 
@@ -209,12 +237,17 @@ def load_receipts() -> list:
 
 
 def scoped_receipts(request: Request) -> list:
-    """Receipts of the account picked in the filter, or of every account."""
+    """Receipts of the account and date range picked in the filters; everything when unset."""
     account_id = selected_account(request)
+    date_from, date_to = date_range(request)
     receipts = load_receipts()
-    if account_id is None:
-        return receipts
-    return [r for r in receipts if r.get("_account_id") == account_id]
+    if account_id is not None:
+        receipts = [r for r in receipts if r.get("_account_id") == account_id]
+    if date_from:
+        receipts = [r for r in receipts if r.get("date", "")[:10] >= date_from]
+    if date_to:
+        receipts = [r for r in receipts if r.get("date", "")[:10] <= date_to]
+    return receipts
 
 
 def parse_price(val) -> float:
@@ -569,19 +602,12 @@ async def receipts_list(
     request: Request,
     page: int = Query(1, ge=1),
     store: str = Query(""),
-    date_from: str = Query(""),
-    date_to: str = Query(""),
 ):
     all_receipts = scoped_receipts(request)
     receipts = all_receipts
 
-    # Filtrowanie
     if store:
         receipts = [r for r in receipts if store.lower() in r.get("store", {}).get("name", "").lower()]
-    if date_from:
-        receipts = [r for r in receipts if r.get("date", "")[:10] >= date_from]
-    if date_to:
-        receipts = [r for r in receipts if r.get("date", "")[:10] <= date_to]
 
     receipts = sorted(receipts, key=lambda r: r.get("date", ""), reverse=True)
 
@@ -600,8 +626,6 @@ async def receipts_list(
         "pages": pages,
         "total": total,
         "store": store,
-        "date_from": date_from,
-        "date_to": date_to,
         "all_stores": all_stores,
         "show_account": selected_account(request) is None and len(db.list_accounts()) > 1,
         "parse_price": parse_price,
