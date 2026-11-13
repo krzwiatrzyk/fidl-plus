@@ -228,3 +228,23 @@ def test_date_filter_keeps_other_params(client):
     assert '<input type="hidden" name="q" value="kajzerka">' in body
     assert '<input type="hidden" name="sort" value="spend">' in body
     assert 'name="page"' not in body
+
+
+def test_top_products_rank_by_quantity_or_spend():
+    receipt = {"id": "R", "date": "2026-07-31T10:00:00", "itemsLine": [
+        {"name": "Bułka", "currentUnitPrice": "0,50", "quantity": "10", "originalAmount": "5,00", "codeInput": "11111111"},
+        {"name": "Kawa", "currentUnitPrice": "40,00", "quantity": "2", "originalAmount": "80,00", "codeInput": "22222222"},
+        {"name": "Telewizor", "currentUnitPrice": "999,00", "quantity": "1", "originalAmount": "999,00", "codeInput": "33333333"},
+    ]}
+    by_count = [p["name"] for p in app.get_top_products([receipt], "count")["top_products"]]
+    by_spend = [p["name"] for p in app.get_top_products([receipt], "spend")["top_products"]]
+    assert by_count == ["Bułka", "Kawa"]
+    assert by_spend == ["Telewizor", "Kawa", "Bułka"]
+
+
+def test_top_products_sort_links(client):
+    body = client.get("/top-products?sort=spend").text
+    assert "Najwięcej wydane" in body
+    assert 'href="/top-products?sort=count"' in body
+    assert "Wydano ▼" in body
+    assert client.get("/top-products?sort=bogus").status_code == 200

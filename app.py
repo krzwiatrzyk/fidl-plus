@@ -415,8 +415,13 @@ def get_insights(receipts: list) -> dict:
     }
 
 
-def get_top_products(receipts: list) -> dict:
-    """Dane do strony /top-products."""
+def get_top_products(receipts: list, sort: str = "count") -> dict:
+    """
+    Data for /top-products, ranked by quantity bought or by money spent.
+
+    The quantity ranking skips one-off purchases; the spend ranking keeps
+    them, since a single expensive item is exactly where the money went.
+    """
     product_count = defaultdict(float)
     product_spend = defaultdict(float)
     product_last_price = {}
@@ -437,12 +442,12 @@ def get_top_products(receipts: list) -> dict:
             if base_price > 0 and bc and len(bc) >= 8:
                 price_history[name].append((date, promo_price))
 
-    # Ranking by quantity bought
-    top_by_count = sorted(
+    min_count = 2 if sort == "count" else 0
+    top_products = sorted(
         [{"name": k, "count": int(v), "spend": round(product_spend[k], 2),
           "last_price": round(product_last_price.get(k, 0), 2)}
-         for k, v in product_count.items() if v >= 2],
-        key=lambda x: -x["count"]
+         for k, v in product_count.items() if v >= min_count],
+        key=lambda x: (-x[sort], -x["spend" if sort == "count" else "count"])
     )[:20]
 
     # Largest price swings
@@ -473,7 +478,7 @@ def get_top_products(receipts: list) -> dict:
     volatility.sort(key=lambda x: -x["change_pct"])
 
     return {
-        "top_by_count": top_by_count,
+        "top_products": top_products,
         "volatility": volatility[:20],
     }
 
@@ -695,11 +700,13 @@ async def insights(request: Request):
 
 
 @app.get("/top-products", response_class=HTMLResponse)
-async def top_products(request: Request):
-    receipts = scoped_receipts(request)
-    data = get_top_products(receipts)
+async def top_products(request: Request, sort: str = Query("count")):
+    if sort not in ("count", "spend"):
+        sort = "count"
+    data = get_top_products(scoped_receipts(request), sort)
     return templates.TemplateResponse(request=request, name="top_products.html", context={
         "request": request,
+        "sort": sort,
         **data,
     })
 

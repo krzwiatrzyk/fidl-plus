@@ -8,20 +8,21 @@
 
   <!-- Ranking ilościowy -->
   <div class="card">
-    <h2>Najczęściej kupowane</h2>
+    <h2>{{ "Najczęściej kupowane" if sort == "count" else "Najwięcej wydane" }}</h2>
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
             <th>#</th>
             <th>Produkt</th>
-            <th>Ilość</th>
-            <th>Wydano</th>
+            {% for key, label in [("count", "Ilość"), ("spend", "Wydano")] %}
+            <th><a href="{{ url_with(request, sort=key) }}" class="row-link" style="color:inherit;">{{ label }}{% if sort == key %} ▼{% endif %}</a></th>
+            {% endfor %}
             <th></th>
           </tr>
         </thead>
         <tbody>
-        {% for p in top_by_count %}
+        {% for p in top_products %}
         <tr>
           <td style="color:var(--muted);font-size:.85rem;">{{ loop.index }}</td>
           <td style="font-weight:500;">{{ p.name }}</td>
