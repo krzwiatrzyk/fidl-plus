@@ -1,0 +1,38 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+# PR titles follow Conventional Commits, so they drive both the changelog and
+# the next version. The major/minor labels override a title when needed.
+categories:
+  - title: '💥 Breaking changes'
+    semver-increment: major
+    exclusive: true
+    when:
+      - conventional:
+          breaking: true
+      - label: major
+  - title: '🚀 Features'
+    semver-increment: minor
+    exclusive: true
+    when:
+      - conventional:
+          type: feat
+      - label: minor
+  - title: '🐛 Fixes'
+    exclusive: true
+    when:
+      conventional:
+        type: fix
+  - title: '🧰 Maintenance'
+  - type: pre-exclude
+    when:
+      label: skip-changelog
+
+change-template: '- $TITLE (#$NUMBER) $AUTHORS'
+change-title-escapes: '\<*_&'
+template: |
+  ## Changes
+
+  $CHANGES
+
+  **Full changelog:** https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...$RESOLVED_TAG
