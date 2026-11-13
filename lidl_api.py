@@ -13,6 +13,15 @@ from urllib.parse import urlencode
 import requests
 
 
+def decode_jwt(token: str | None) -> dict | None:
+    """Read a JWT payload without verifying it - only for expiry and identity."""
+    try:
+        payload = token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except Exception:
+        return None
+
+
 class LidlPlusAPI:
     """Klient API Lidl Plus"""
 
@@ -293,17 +302,29 @@ Fetch the user profile.
 
         return response.json()
 
-    def save_tokens(self, filepath: str = "lidl_tokens.json"):
-        """Zapisuje tokeny do pliku"""
-        tokens = {
-            'access_token': self.access_token,
-            'refresh_token': self.refresh_token,
-            'id_token': self.id_token,
-            'device_id': self.device_id
+    @classmethod
+    def from_tokens(cls, tokens: dict, country: str = "PL") -> "LidlPlusAPI":
+        api = cls(country=country)
+        api.access_token = tokens.get("access_token")
+        api.refresh_token = tokens.get("refresh_token")
+        api.id_token = tokens.get("id_token")
+        if tokens.get("device_id"):
+            api.device_id = tokens["device_id"]
+            api.session.headers["Deviceid"] = api.device_id
+        return api
+
+    def token_dict(self) -> dict:
+        return {
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "id_token": self.id_token,
+            "device_id": self.device_id,
         }
 
+    def save_tokens(self, filepath: str = "lidl_tokens.json"):
+        """Zapisuje tokeny do pliku"""
         with open(filepath, 'w') as f:
-            json.dump(tokens, f, indent=2)
+            json.dump(self.token_dict(), f, indent=2)
 
         print(f"Tokeny zapisane do {filepath}")
 

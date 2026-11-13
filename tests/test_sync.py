@@ -1,8 +1,7 @@
-import json
-
 import pytest
 
-import app
+import db
+import services
 from lidl_api import LidlPlusAPI
 
 
@@ -12,13 +11,15 @@ class FakeAPI:
         self.fail_listing = fail_listing
         self.fail_refresh = fail_refresh
         self.detail_calls = []
+        self.access_token = "new-access"
+        self.refresh_token = "new-refresh"
 
     def refresh_access_token(self):
         if self.fail_refresh:
-            raise RuntimeError("invalid_grant")
+            raise RuntimeError("400 invalid_grant")
 
-    def save_tokens(self, path):
-        pass
+    def token_dict(self):
+        return {"access_token": self.access_token, "refresh_token": self.refresh_token}
 
     def get_all_tickets(self, max_pages=10, known_ids=None):
         if self.fail_listing:
@@ -31,38 +32,55 @@ class FakeAPI:
 
 
 @pytest.fixture
-def dataset(tmp_path, monkeypatch):
-    path = tmp_path / "receipts.json"
-    path.write_text(json.dumps([{"id": "OLD-1"}, {"id": "OLD-2"}]), encoding="utf-8")
-    monkeypatch.setattr(app, "DATA_FILE", str(path))
-    return path
+def account():
+    account_id = db.store_login({"access_token": "old-access", "refresh_token": "old-refresh"})
+    db.upsert_receipts(account_id, [{"id": "OLD-1"}, {"id": "OLD-2"}])
+    return account_id
 
 
-def _ids(path):
-    return {r["id"] for r in json.loads(path.read_text(encoding="utf-8"))}
+def use_api(monkeypatch, api):
+    monkeypatch.setattr(services.LidlPlusAPI, "from_tokens", classmethod(lambda cls, tokens: api))
 
 
-def test_listing_failure_keeps_stored_receipts(dataset, monkeypatch):
-    monkeypatch.setattr(app, "load_api", lambda: FakeAPI(fail_listing=True))
-    app.run_sync()
-    assert _ids(dataset) == {"OLD-1", "OLD-2"}
-    assert app.sync_state["error"]
+def test_listing_failure_keeps_stored_receipts(account, monkeypatch):
+    use_api(monkeypatch, FakeAPI(fail_listing=True))
+    with pytest.raises(RuntimeError):
+        services.sync_account(account)
+    assert db.receipt_ids(account) == {"OLD-1", "OLD-2"}
+    assert services.progress[account]["error"]
 
 
-def test_refresh_failure_is_reported(dataset, monkeypatch):
-    monkeypatch.setattr(app, "load_api", lambda: FakeAPI(fail_refresh=True))
-    app.run_sync()
-    assert "zaloguj" in app.sync_state["error"]
-    assert _ids(dataset) == {"OLD-1", "OLD-2"}
+def test_refresh_failure_is_recorded_on_the_account(account, monkeypatch):
+    use_api(monkeypatch, FakeAPI(fail_refresh=True))
+    with pytest.raises(RuntimeError):
+        services.sync_account(account)
+    stored = db.get_account(account)
+    assert stored["last_refresh_ok"] == 0
+    assert "invalid_grant" in stored["last_error"]
+    assert db.receipt_ids(account) == {"OLD-1", "OLD-2"}
 
 
-def test_sync_adds_new_receipts_and_keeps_old_ones(dataset, monkeypatch):
+def test_sync_adds_new_receipts_and_keeps_old_ones(account, monkeypatch):
     api = FakeAPI(pages=[[{"id": "NEW-1"}, {"id": "OLD-1"}]])
-    monkeypatch.setattr(app, "load_api", lambda: api)
-    app.run_sync()
-    assert _ids(dataset) == {"OLD-1", "OLD-2", "NEW-1"}
+    use_api(monkeypatch, api)
+
+    assert services.sync_account(account) == 1
+
+    assert db.receipt_ids(account) == {"OLD-1", "OLD-2", "NEW-1"}
     assert api.detail_calls == ["NEW-1"]
-    assert app.sync_state["done"]
+    stored = db.get_account(account)
+    assert stored["refresh_token"] == "new-refresh"
+    assert stored["last_refresh_ok"] == 1
+    assert stored["last_sync_at"]
+
+
+def test_parallel_sync_of_the_same_account_is_refused(account):
+    services._locks[account].acquire()
+    try:
+        with pytest.raises(services.SyncInProgress):
+            services.sync_account(account)
+    finally:
+        services._locks[account].release()
 
 
 def test_get_all_tickets_stops_at_a_fully_known_page(monkeypatch):

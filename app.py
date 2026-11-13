@@ -4,6 +4,7 @@ Fidl Plus - web UI.
 Run:  python app.py
 Open: http://localhost:8000
 """
+import html
 import json
 import os
 import re
@@ -11,7 +12,7 @@ import subprocess
 import sys
 import threading
 from collections import defaultdict
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 import uvicorn
@@ -20,7 +21,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from lidl_api import LidlPlusAPI
+import db
+import services
 from receipt_parser import enrich_receipts
 
 app = FastAPI(title="Fidl Plus")
@@ -31,11 +33,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates.env.filters["urlencode"] = lambda s: quote(str(s), safe="")
 templates.env.filters["tojson"]    = lambda v: json.dumps(v, ensure_ascii=False)
 
-# Sync progress - shared between the request and the worker thread
+# Sync of all accounts started from the UI; per-account progress lives in services.progress
 sync_state = {
     "running": False,
-    "count": 0,
-    "total": 0,
+    "new": 0,
     "error": None,
     "done": False,
 }
@@ -71,8 +72,12 @@ def _resolve_data_file(name: str, *legacy_names: str) -> str:
     return current
 
 
-TOKENS_FILE = _resolve_data_file("lidl_tokens.json")
-DATA_FILE = _resolve_data_file("receipts.json", "wszystkie_paragony_szczegoly.json")
+DB_FILE = os.path.join(DATA_DIR, "fidl.db")
+db.init(DB_FILE)
+db.migrate_legacy(
+    _resolve_data_file("lidl_tokens.json"),
+    _resolve_data_file("receipts.json", "wszystkie_paragony_szczegoly.json"),
+)
 
 # Browser preview during login inside Docker (noVNC).
 # NOVNC_PORT  - port on the same host as the app (6080 in the Docker image)
@@ -85,31 +90,15 @@ NOVNC_URL = os.getenv("NOVNC_URL", "")
 # Helpers
 # ---------------------------------------------------------------------------
 
-def load_api() -> LidlPlusAPI | None:
-    """Build an API client from the saved tokens, refreshing them if needed."""
-    if not os.path.exists(TOKENS_FILE):
-        return None
-    api = LidlPlusAPI(country="PL")
-    if api.load_tokens(TOKENS_FILE):
-        return api
-    return None
+_receipts_cache: dict = {"version": None, "receipts": []}
 
 
 def load_receipts() -> list:
-    """Wczytaj paragony z pliku cache, sparsuj HTML i znormalizuj nazwy."""
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, encoding="utf-8") as f:
-            raw = json.load(f)
-        receipts, _ = enrich_receipts(raw)
-        return receipts
-    return []
-
-
-def save_receipts(receipts: list):
-    tmp = f"{DATA_FILE}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(receipts, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, DATA_FILE)
+    """All receipts with HTML printouts parsed and product names normalized."""
+    if _receipts_cache["version"] != db.receipts_version:
+        receipts, _ = enrich_receipts(db.all_receipts())
+        _receipts_cache.update(version=db.receipts_version, receipts=receipts)
+    return _receipts_cache["receipts"]
 
 
 def parse_price(val) -> float:
@@ -423,7 +412,7 @@ async def index(request: Request):
     stats = get_stats(receipts)
     coupon_stats = get_coupon_stats(receipts)
     recent = sorted(receipts, key=lambda r: r.get("date", ""), reverse=True)[:20]
-    logged_in = os.path.exists(TOKENS_FILE)
+    logged_in = any(a.get("refresh_token") for a in db.list_accounts())
     return templates.TemplateResponse(request=request, name="index.html", context={
         "request": request,
         "stats": stats,
@@ -441,7 +430,8 @@ async def receipts_list(
     date_from: str = Query(""),
     date_to: str = Query(""),
 ):
-    receipts = load_receipts()
+    all_receipts = load_receipts()
+    receipts = all_receipts
 
     # Filtrowanie
     if store:
@@ -459,7 +449,7 @@ async def receipts_list(
     receipts_page = receipts[(page - 1) * per_page : page * per_page]
 
     # Store list for the filter dropdown
-    all_stores = sorted({r.get("store", {}).get("name", "") for r in load_receipts() if r.get("store")})
+    all_stores = sorted({r.get("store", {}).get("name", "") for r in all_receipts if r.get("store")})
 
     return templates.TemplateResponse(request=request, name="receipts.html", context={
         "request": request,
@@ -611,9 +601,7 @@ async def login_upload_token(request: Request):
             tokens = json.loads(content)
             if not isinstance(tokens, dict) or "access_token" not in tokens:
                 raise ValueError("brak pola access_token")
-            os.makedirs(os.path.dirname(os.path.abspath(TOKENS_FILE)), exist_ok=True)
-            with open(TOKENS_FILE, "w", encoding="utf-8") as f:
-                json.dump(tokens, f, ensure_ascii=False, indent=2)
+            db.store_login(tokens)
             return HTMLResponse("""
                 <div id="token-upload-status" class="status-ok">
                     Tokeny wgrane pomyślnie! <a href="/sync">Pobierz paragony</a>
@@ -637,7 +625,7 @@ async def login_start(request: Request):
     """Run browser_login.py in the background and return a status snippet."""
     def run_login():
         subprocess.run(
-            [sys.executable, "browser_login.py"],
+            [sys.executable, "browser_login.py", "--db"],
             cwd=os.path.dirname(os.path.abspath(__file__))
         )
     thread = threading.Thread(target=run_login, daemon=True)
@@ -652,11 +640,10 @@ async def login_start(request: Request):
 
 @app.get("/login/status", response_class=HTMLResponse)
 async def login_status():
-    if os.path.exists(TOKENS_FILE):
-        # Treat the token as fresh if it was written in the last 5 minutes
-        mtime = os.path.getmtime(TOKENS_FILE)
-        age = datetime.now().timestamp() - mtime
-        if age < 300:
+    logins = [a["refresh_obtained_at"] for a in db.list_accounts() if a.get("refresh_obtained_at")]
+    if logins:
+        age = datetime.now(UTC) - datetime.fromisoformat(max(logins))
+        if age.total_seconds() < 300:
             return HTMLResponse("""
                 <div id="login-status" class="status-ok">
                     Zalogowano! <a href="/">Przejdź do dashboardu</a>
@@ -677,50 +664,22 @@ async def sync_page(request: Request):
 
 
 def run_sync():
-    sync_state["running"] = True
-    sync_state["count"] = 0
-    sync_state["total"] = 0
-    sync_state["error"] = None
-    sync_state["done"] = False
+    sync_state.update(running=True, new=0, error=None, done=False)
     try:
-        api = load_api()
-        if not api:
-            sync_state["error"] = "Brak tokenów - zaloguj się najpierw."
+        accounts = db.list_accounts()
+        if not accounts:
+            sync_state["error"] = "Brak kont - zaloguj się najpierw."
             return
-        try:
-            api.refresh_access_token()
-            api.save_tokens(TOKENS_FILE)
-        except Exception as e:
-            sync_state["error"] = f"Nie udało się odświeżyć tokenu - zaloguj się ponownie. ({e})"
-            return
-
-        existing = {}
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, encoding="utf-8") as f:
-                for r in json.load(f):
-                    if r.get("id"):
-                        existing[r["id"]] = r
-
-        tickets = api.get_all_tickets(max_pages=100, known_ids=set(existing))
-        new_tickets = [t for t in tickets if t.get("id") and t["id"] not in existing]
-        sync_state["total"] = len(new_tickets)
-
-        # Receipts are only ever added: the stored dataset is the source of
-        # truth and the API listing is used just to discover new ids.
-        for i, ticket in enumerate(new_tickets, start=1):
+        errors = []
+        for account in accounts:
             try:
-                existing[ticket["id"]] = api.get_ticket_details(ticket["id"])
-            except Exception:
-                existing[ticket["id"]] = ticket
-            sync_state["count"] = i
-            if i % 10 == 0:
-                save_receipts(list(existing.values()))
-
-        save_receipts(list(existing.values()))
-        sync_state["done"] = True
-
-    except Exception as e:
-        sync_state["error"] = str(e)
+                sync_state["new"] += services.sync_account(account["id"])
+            except Exception as e:
+                errors.append(f"{account['label']}: {e}")
+        if errors:
+            sync_state["error"] = "; ".join(errors)
+        else:
+            sync_state["done"] = True
     finally:
         sync_state["running"] = False
 
@@ -750,12 +709,12 @@ async def sync_status():
     if sync_state.get("error"):
         return HTMLResponse(f"""
             <div id="sync-status" class="alert alert-warn">
-                Błąd: {sync_state["error"]}
+                Błąd: {html.escape(sync_state["error"])}
             </div>
         """)
 
     if sync_state.get("done"):
-        count = sync_state["count"]
+        count = sync_state["new"]
         return HTMLResponse(f"""
             <div id="sync-status" class="status-ok">
                 Pobrano {count} nowych paragonów.
@@ -764,8 +723,9 @@ async def sync_status():
         """)
 
     if sync_state.get("running"):
-        count = sync_state["count"]
-        total = sync_state["total"]
+        running = [p for p in services.progress.values() if p["running"]]
+        count = sum(p["count"] for p in running)
+        total = sum(p["total"] for p in running)
         pct = int(count / total * 100) if total else 0
         return HTMLResponse(f"""
             <div id="sync-status" class="status-running"

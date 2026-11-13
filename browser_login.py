@@ -11,6 +11,7 @@ That deep link is captured two ways:
 Inside Docker, Chromium runs under Xvfb and its window is exposed over
 noVNC on port 6080.
 """
+import argparse
 import os
 import shutil
 import sys
@@ -83,7 +84,7 @@ def _read_callback_file() -> str | None:
 # Login
 # ---------------------------------------------------------------------------
 
-def login_with_browser() -> dict | None:
+def login_with_browser(use_db: bool = False, account_id: int | None = None) -> dict | None:
     api = LidlPlusAPI(country="PL")
     auth_url, _state, code_verifier = api.get_authorization_url()
 
@@ -195,8 +196,14 @@ def login_with_browser() -> dict | None:
     print("Przechwycono kod - wymieniam na tokeny...")
     try:
         token_data = api.exchange_code_for_token(found["code"], code_verifier)
-        api.save_tokens(TOKENS_FILE)
-        print(f"Tokeny zapisane do {TOKENS_FILE}")
+        if use_db:
+            import db
+            db.init(os.path.join(DATA_DIR, "fidl.db"))
+            saved_id = db.store_login(api.token_dict(), account_id)
+            print(f"Tokeny zapisane w bazie (konto {saved_id})")
+        else:
+            api.save_tokens(TOKENS_FILE)
+            print(f"Tokeny zapisane do {TOKENS_FILE}")
         return token_data
     except Exception as e:
         print(f"Błąd wymiany tokenu: {e}")
@@ -204,11 +211,18 @@ def login_with_browser() -> dict | None:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Fidl Plus - logowanie do Lidl Plus")
+    parser.add_argument("--db", action="store_true",
+                        help="zapisz tokeny w bazie aplikacji zamiast w lidl_tokens.json")
+    parser.add_argument("--account-id", type=int,
+                        help="z --db: konto do zaktualizowania (domyślnie wg zalogowanego użytkownika)")
+    args = parser.parse_args()
+
     print("\n" + "=" * 60)
     print("FIDL PLUS - LOGOWANIE")
     print("=" * 60)
 
-    if login_with_browser():
+    if login_with_browser(use_db=args.db, account_id=args.account_id):
         print("\nSUKCES! Uruchom aplikację:")
         print("  python3 app.py")
     else:

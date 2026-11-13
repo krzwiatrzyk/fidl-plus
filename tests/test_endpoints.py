@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app
+import db
 
 
 @pytest.fixture
@@ -23,9 +24,8 @@ def client(api_receipt, html_receipt, tmp_path, monkeypatch):
         "htmlPrintedReceipt": html_receipt,
     }
 
-    dataset = tmp_path / "receipts.json"
-    dataset.write_text(json.dumps([api_receipt, printed_receipt]), encoding="utf-8")
-    monkeypatch.setattr(app, "DATA_FILE", str(dataset))
+    account_id = db.store_login({"access_token": "a", "refresh_token": "r"})
+    db.upsert_receipts(account_id, [api_receipt, printed_receipt])
 
     return TestClient(app.app)
 
@@ -85,15 +85,13 @@ def test_login_page_with_novnc_shows_preview_button(client, monkeypatch):
     assert ":6080/vnc.html" in client.get("/login").text
 
 
-def test_amounts_render_when_api_returns_a_string(client, api_receipt, tmp_path, monkeypatch):
+def test_amounts_render_when_api_returns_a_string(client, api_receipt):
     """
     REGRESSION: templates used "%.2f"|format(totalAmount), which crashed the
     page whenever the API returned the amount as a string.
     """
     api_receipt["totalAmount"] = "49,80"
-    dataset = tmp_path / "string_amounts.json"
-    dataset.write_text(json.dumps([api_receipt]), encoding="utf-8")
-    monkeypatch.setattr(app, "DATA_FILE", str(dataset))
+    db.upsert_receipts(1, [api_receipt])
 
     for path in ("/", "/receipts", "/insights", "/receipt/TEST-API-1"):
         response = client.get(path)
@@ -101,11 +99,8 @@ def test_amounts_render_when_api_returns_a_string(client, api_receipt, tmp_path,
     assert "49.80 zł" in client.get("/receipt/TEST-API-1").text
 
 
-def test_token_upload_accepts_a_valid_file(client, tmp_path, monkeypatch):
+def test_token_upload_accepts_a_valid_file(client):
     """Fallback login path: uploading a lidl_tokens.json produced elsewhere."""
-    target = tmp_path / "lidl_tokens.json"
-    monkeypatch.setattr(app, "TOKENS_FILE", str(target))
-
     tokens = {"access_token": "abc", "refresh_token": "def"}
     response = client.post(
         "/login/token",
@@ -113,15 +108,13 @@ def test_token_upload_accepts_a_valid_file(client, tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert json.loads(target.read_text(encoding="utf-8")) == tokens
+    assert [a["refresh_token"] for a in db.list_accounts()][-1] == "def"
 
 
 @pytest.mark.parametrize("payload", ["not json at all", '{"foo": "bar"}'])
-def test_token_upload_rejects_a_bad_file(client, tmp_path, monkeypatch, payload):
-    """A malformed file must not overwrite working tokens."""
-    target = tmp_path / "lidl_tokens.json"
-    target.write_text('{"access_token": "keep-me"}', encoding="utf-8")
-    monkeypatch.setattr(app, "TOKENS_FILE", str(target))
+def test_token_upload_rejects_a_bad_file(client, payload):
+    """A malformed file must not touch stored accounts."""
+    before = db.list_accounts()
 
     response = client.post(
         "/login/token",
@@ -130,4 +123,4 @@ def test_token_upload_rejects_a_bad_file(client, tmp_path, monkeypatch, payload)
 
     assert response.status_code == 200
     assert "Błąd" in response.text
-    assert json.loads(target.read_text(encoding="utf-8")) == {"access_token": "keep-me"}
+    assert db.list_accounts() == before
