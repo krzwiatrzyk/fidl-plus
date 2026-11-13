@@ -1,52 +1,55 @@
 # Fidl Plus
 
 [![CI](https://github.com/KamKubicki/fidl-plus/actions/workflows/ci.yml/badge.svg)](https://github.com/KamKubicki/fidl-plus/actions/workflows/ci.yml)
-[![Obraz Docker](https://github.com/KamKubicki/fidl-plus/actions/workflows/docker.yml/badge.svg)](https://github.com/KamKubicki/fidl-plus/actions/workflows/docker.yml)
+[![Docker image](https://github.com/KamKubicki/fidl-plus/actions/workflows/docker.yml/badge.svg)](https://github.com/KamKubicki/fidl-plus/actions/workflows/docker.yml)
 
-Lokalna aplikacja webowa do przeglądania paragonów z aplikacji Lidl Plus.
-Pobiera dane przez mobilne API Lidl Plus i wyświetla je w przeglądarce.
+A self-hosted web app for browsing your Lidl Plus receipts. It pulls data
+through the Lidl Plus mobile API and shows it in the browser.
 
-## Funkcje
+The app's interface is in Polish; this README gives the original button and
+page names in **bold** so you can find them.
 
-- **Wiele kont** – np. twoje i współmałżonka; dane widać razem albo osobno (filtr w nawigacji)
-- **Stan logowania** – czy tokeny działają, kiedy były odświeżone, kiedy była synchronizacja
-- **Dashboard** – statystyki wydatków, ulubiony sklep, ostatnie zakupy, wydatki per konto
-- **Lista paragonów** – wszystkie zakupy z filtrowaniem po sklepie, dacie i koncie
-- **Szczegóły paragonu** – pełna lista produktów z cenami i rabatami
-- **Produkty** – wszystkie kupione produkty z wyszukiwaniem, sortowaniem i zakresem cen
-- **Harmonogram** – codzienne pobieranie paragonów i odświeżanie tokenów bez klikania,
-  z historią uruchomień i przyciskiem „Uruchom teraz”
-- **Historia ceny** – wykres zmiany ceny produktu w czasie
-- **Normalizacja nazw** – ten sam produkt pod różnymi nazwami jest scalany po kodzie kreskowym
+## Features
 
-## Screenshoty
+- **Multiple accounts** – e.g. yours and your spouse's; view the data together or per account (filter in the navigation bar)
+- **Login status** – whether each account's tokens work, when they were last refreshed and when it last synced
+- **Dashboard** – spending stats, favourite store, recent purchases, spending per account
+- **Receipts** – every purchase, filterable by store, date and account
+- **Receipt details** – the full product list with prices and discounts
+- **Products** – every product you have bought, with search, sorting and price ranges
+- **Schedule** – daily receipt download and token refresh without clicking,
+  with run history and a run-now button
+- **Price history** – a chart of a product's price over time
+- **Name normalisation** – the same product sold under different names is merged by barcode
+
+## Screenshots
 
 | Dashboard | Insights |
 |---|---|
 | ![Dashboard](docs/screenshots/dashboard.png) | ![Insights](docs/screenshots/insights.png) |
 
-| Top produkty | Historia ceny |
+| Top products | Price history |
 |---|---|
-| ![Top produkty](docs/screenshots/top_products_v2.png) | ![Wykres](docs/screenshots/product_chart.png) |
+| ![Top products](docs/screenshots/top_products_v2.png) | ![Chart](docs/screenshots/product_chart.png) |
 
-| Paragony | Szczegóły paragonu |
+| Receipts | Receipt details |
 |---|---|
-| ![Paragony](docs/screenshots/receipts.png) | ![Szczegóły](docs/screenshots/receipt_detail.png) |
+| ![Receipts](docs/screenshots/receipts.png) | ![Details](docs/screenshots/receipt_detail.png) |
 
-## Uruchomienie w Dockerze (zalecane)
+## Running with Docker (recommended)
 
-Nie musisz nic budować ani instalować Chrome'a. Gotowy obraz leży w GitHub
-Container Registry:
+There is nothing to build and no Chrome to install. A ready-made image is
+published to the GitHub Container Registry:
 
 ```
 ghcr.io/kamkubicki/fidl-plus:latest
 ```
 
-Jest to obraz **multi-arch** – pod jednym tagiem siedzą wersje `linux/amd64`
-(Synology, zwykłe PC, serwery) i `linux/arm64` (Apple Silicon, Raspberry Pi).
-Docker sam pobiera właściwą, więc niczego nie wybierasz.
+The image is **multi-arch**: the same tag contains `linux/amd64` (Synology,
+regular PCs, servers) and `linux/arm64` (Apple Silicon, Raspberry Pi) builds,
+and Docker picks the right one for you.
 
-### Start w dwóch poleceniach
+### Start in two commands
 
 ```bash
 mkdir fidl-plus && cd fidl-plus
@@ -54,37 +57,40 @@ curl -O https://raw.githubusercontent.com/KamKubicki/fidl-plus/master/docker-com
 docker compose up -d
 ```
 
-Pierwsze pobranie trwa chwilę – obraz waży ok. 2 GB, bo zawiera Chromium.
+The first pull takes a while: the image is about 2 GB because it ships
+Chromium.
 
-### Logowanie
+### Logging in
 
-1. Otwórz `http://localhost:8000/login`
-2. Kliknij **Otwórz przeglądarkę i zaloguj się**
-3. Otworzy się druga karta z obrazem przeglądarki działającej w kontenerze
-   (noVNC, port 6080). Zaloguj się w niej normalnie do Lidl Plus.
-4. Token zostanie przechwycony sam i zapisany w bazie `./data/fidl.db`
-5. Wróć na `http://localhost:8000` i kliknij **Odśwież dane** – kolejne
-   paragony harmonogram pobierze już sam
+1. Open `http://localhost:8000/login`
+2. Click **Otwórz przeglądarkę i zaloguj się** (open the browser and log in)
+3. A second tab opens with a view of the browser running inside the
+   container (noVNC, port 6080). Log in to Lidl Plus there as usual.
+4. The token is captured automatically and stored in `./data/fidl.db`
+5. Go back to `http://localhost:8000` and click **Odśwież dane** (refresh
+   data). From then on the scheduler downloads new receipts on its own.
 
-Kolejne konto (np. współmałżonka) dodasz przez **Konta** → **Dodaj konto**.
-Zalogowanie się na konto, które już jest na liście, aktualizuje je zamiast
-tworzyć duplikat. Stan każdego konta widać w nawigacji (zielona / żółta /
-czerwona kropka) i na stronie **Konta**.
+Add another account (e.g. your spouse's) via **Konta** (accounts) →
+**Dodaj konto** (add account). Logging in to an account that is already on
+the list updates it instead of creating a duplicate. Each account's state is
+shown in the navigation bar (green / yellow / red dot) and on the **Konta**
+page.
 
-Logujesz się ręcznie, w widocznym oknie, bo Lidl potrafi zażądać kodu SMS
-albo captchy – tryb w pełni automatyczny by na tym poległ.
+You log in by hand, in a visible window, because Lidl may ask for an SMS
+code or a captcha, which a fully automated login would fail on.
 
-Jeśli Lidl zablokuje logowanie z adresu twojego serwera, na stronie `/login`
-jest **Metoda 2**: uruchom logowanie raz na komputerze z Chrome
-(`python3 browser_login.py`) i wgraj powstały `lidl_tokens.json` formularzem.
+If Lidl blocks logins from your server's IP address, the `/login` page has a
+**Method 2**: run the login once on a computer with Chrome
+(`python3 browser_login.py`) and upload the resulting `lidl_tokens.json`
+through the form.
 
-### Aktualizacja
+### Updating
 
 ```bash
 docker compose pull && docker compose up -d
 ```
 
-### Budowanie z własnych źródeł
+### Building from source
 
 ```bash
 git clone https://github.com/KamKubicki/fidl-plus.git
@@ -94,14 +100,14 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 ---
 
-## Synology NAS – krok po kroku
+## Synology NAS step by step
 
-### Sposób 1: Container Manager (DSM 7.2 i nowszy)
+### Option 1: Container Manager (DSM 7.2 or newer)
 
-1. **File Station** → utwórz folder na dane, np. `docker/fidl-plus`
-2. **Container Manager** → **Projekt** → **Utwórz**
-3. Nazwa projektu: `fidl-plus`, ścieżka: folder z punktu 1
-4. Źródło: **Utwórz plik docker-compose.yml** i wklej:
+1. **File Station** → create a folder for the data, e.g. `docker/fidl-plus`
+2. **Container Manager** → **Project** → **Create**
+3. Project name: `fidl-plus`, path: the folder from step 1
+4. Source: **Create docker-compose.yml** and paste:
 
 ```yaml
 services:
@@ -116,24 +122,24 @@ services:
       - /volume1/docker/fidl-plus/data:/data
     environment:
       TZ: Europe/Warsaw
-      PUID: "1026"     # patrz niżej
+      PUID: "1026"     # see below
       PGID: "100"
     shm_size: "1gb"
 ```
 
-5. Kliknij **Dalej** → **Gotowe**. Pierwsze uruchomienie potrwa kilka minut
-   (pobieranie 2 GB).
-6. Otwórz `http://IP-NAS-a:8000/login` i zaloguj się jak wyżej
+5. Click **Next** → **Done**. The first start takes a few minutes (a 2 GB
+   download).
+6. Open `http://NAS-IP:8000/login` and log in as described above
 
-### Sposób 2: Portainer
+### Option 2: Portainer
 
-**Stacks** → **Add stack** → **Web editor**, wklej ten sam YAML co wyżej
-i kliknij **Deploy the stack**.
+**Stacks** → **Add stack** → **Web editor**, paste the same YAML as above and
+click **Deploy the stack**.
 
-Aktualizacja: **Stacks** → `fidl-plus` → **Update** z zaznaczonym
-**Re-pull image**.
+To update: **Stacks** → `fidl-plus` → **Update** with **Re-pull image**
+ticked.
 
-### Sposób 3: SSH
+### Option 3: SSH
 
 ```bash
 mkdir -p /volume1/docker/fidl-plus && cd /volume1/docker/fidl-plus
@@ -141,85 +147,86 @@ curl -O https://raw.githubusercontent.com/KamKubicki/fidl-plus/master/docker-com
 docker compose up -d
 ```
 
-### PUID i PGID – jak ustalić właściwe
+### Finding the right PUID and PGID
 
-Synology nadaje użytkownikom nietypowe identyfikatory (często `1026`, `1027`).
-Kontener domyślnie używa `1000:1000`. Jeśli twój folder należy do kogoś innego,
-podaj właściwe wartości – sprawdzisz je przez SSH:
+Synology gives users unusual ids (often `1026`, `1027`). The container uses
+`1000:1000` by default. If your folder belongs to someone else, set the
+right values; you can check them over SSH:
 
 ```bash
-id twoja_nazwa_uzytkownika
+id your_user_name
 # uid=1026(kamil) gid=100(users)
 ```
 
-Nie musisz nic robić ręcznie z uprawnieniami: kontener startuje jako root
-wyłącznie po to, żeby ustawić właściciela `/data`, po czym schodzi do
-`PUID:PGID`. Sama aplikacja i Chromium nigdy nie działają jako root.
+You do not need to fix permissions by hand: the container starts as root
+only to set the owner of `/data`, then drops to `PUID:PGID`. The app and
+Chromium never run as root.
 
-### Gdy coś nie działa
+### Troubleshooting
 
-| Objaw | Przyczyna |
+| Symptom | Cause |
 |---|---|
-| Kontener restartuje się w kółko | Brakuje `shm_size: "1gb"` – Chromium nie wstanie na domyślnych 64 MB |
-| `ERROR: /data is not writable` | Zły `PUID`/`PGID` – sprawdź `id` przez SSH |
-| Strona działa, noVNC nie | Port 6080 nie został przekierowany |
-| Puste okno noVNC | Odśwież kartę; Chromium wstaje kilka sekund |
+| The container keeps restarting | `shm_size: "1gb"` is missing – Chromium will not start with the default 64 MB |
+| `ERROR: /data is not writable` | Wrong `PUID`/`PGID` – check with `id` over SSH |
+| The app works but noVNC does not | Port 6080 is not forwarded |
+| The noVNC window is blank | Reload the tab; Chromium takes a few seconds to start |
 
-Logi: **Container Manager** → `fidl-plus` → **Dziennik**, albo
+Logs: **Container Manager** → `fidl-plus` → **Log**, or
 `docker logs fidl-plus`.
 
 ---
 
-## Konfiguracja
+## Configuration
 
-| Zmienna | Domyślnie | Opis |
+| Variable | Default | Description |
 |---|---|---|
-| `DATA_DIR` | `/data` | katalog na tokeny i paragony |
-| `PUID` / `PGID` | `1000` | właściciel plików w `/data` |
-| `NOVNC_PORT` | `6080` | port podglądu przeglądarki |
-| `NOVNC_URL` | – | pełny adres noVNC, gdy stoisz za reverse proxy |
-| `LOGIN_TIMEOUT` | `180` | ile sekund czekać na zalogowanie |
-| `TZ` | – | strefa czasowa, np. `Europe/Warsaw` – według niej działa harmonogram |
-| `SYNC_CRON` | `0 6 * * *` | kiedy pobierać nowe paragony (składnia crona) |
-| `TOKEN_REFRESH_HOURS` | `6` | co ile godzin odświeżać tokeny wszystkich kont |
-| `SCHEDULER_ENABLED` | `1` | `0` wyłącza harmonogram; zadania da się wtedy uruchamiać tylko ręcznie |
-| `RADAR_ENABLED` | `0` | `1` włącza panel [fastapi-radar](https://github.com/doganarif/fastapi-radar) pod `/__radar` |
+| `DATA_DIR` | `/data` | directory for the database (accounts, tokens, receipts) |
+| `PUID` / `PGID` | `1000` | owner of the files in `/data` |
+| `NOVNC_PORT` | `6080` | port of the browser preview |
+| `NOVNC_URL` | – | full noVNC address when running behind a reverse proxy |
+| `LOGIN_TIMEOUT` | `180` | how many seconds to wait for the login |
+| `TZ` | – | time zone, e.g. `Europe/Warsaw`; the scheduler runs in this zone |
+| `SYNC_CRON` | `0 6 * * *` | when to download new receipts (cron syntax) |
+| `TOKEN_REFRESH_HOURS` | `6` | how often to refresh the tokens of all accounts, in hours |
+| `SCHEDULER_ENABLED` | `1` | `0` turns the scheduler off; jobs can then only be run by hand |
+| `RADAR_ENABLED` | `0` | `1` turns on the [fastapi-radar](https://github.com/doganarif/fastapi-radar) dashboard at `/__radar` |
 
-Harmonogram działa wewnątrz procesu aplikacji, więc uvicorn musi działać
-z **jednym workerem** (tak jest w obrazie). Kilka workerów oznaczałoby
-kilka harmonogramów pobierających te same paragony naraz.
+The scheduler runs inside the app process, so uvicorn must run with **a
+single worker** (as the image does). Several workers would mean several
+schedulers downloading the same receipts at once.
 
-### fastapi-radar
-
-Z `RADAR_ENABLED=1` w nawigacji pojawia się link **Radar**: lista requestów
-z czasami, zapytania SQL do bazy i wyjątki ze stack trace'ami. Dane trzyma
-w `DATA_DIR/radar.duckdb` (24 h). Domyślnie jest wyłączony, bo zapisuje
-treść requestów i odpowiedzi, nie ma żadnego logowania i pozwala
-„odtworzyć” zapisany request. Ścieżki `/login*` i parametry zapytań SQL
-nie są zapisywane, żeby tokeny nie trafiły do panelu.
-
-Zmiana portu aplikacji – w `docker-compose.yml`:
+To change the app port, edit `docker-compose.yml`:
 
 ```yaml
 ports:
   - "8080:8000"
 ```
 
-> **Uwaga na bezpieczeństwo.** Aplikacja nie ma uwierzytelniania, a noVNC
-> działa bez hasła. Kto dojdzie do portu 8000, zobaczy wszystkie paragony;
-> kto dojdzie do 6080, steruje przeglądarką wewnątrz twojej sieci.
-> Trzymaj oba porty w LAN i nie przekierowuj ich na routerze.
+### fastapi-radar
+
+With `RADAR_ENABLED=1` a **Radar** link appears in the navigation bar: a list
+of requests with timings, the SQL queries sent to the database and exceptions
+with stack traces. Data is kept in `DATA_DIR/radar.duckdb` for 24 hours. It
+is off by default because it stores request and response bodies, has no
+login of its own and can replay a recorded request. `/login*` paths and SQL
+query parameters are never recorded, so tokens do not end up in the
+dashboard.
+
+> **Security note.** The app has no authentication and noVNC runs without a
+> password. Anyone who can reach port 8000 sees all your receipts; anyone who
+> can reach port 6080 controls a browser inside your network. Keep both ports
+> on your LAN and do not forward them on your router.
 
 ---
 
-## Instalacja lokalna (bez Dockera)
+## Local install (without Docker)
 
-### Wymagania
+### Requirements
 
 - Python 3.11+
-- Google Chrome (macOS) lub Chromium (Linux) – do logowania
+- Google Chrome (macOS) or Chromium (Linux) – for the login
 
-### Instalacja
+### Install
 
 ```bash
 git clone https://github.com/KamKubicki/fidl-plus.git
@@ -231,65 +238,64 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Na macOS używana jest domyślna ścieżka do Google Chrome. Na innych systemach
-albo przy nietypowej lokalizacji wskaż binarkę zmienną `CHROME_BINARY`:
+On macOS the default Google Chrome path is used. On other systems, or if
+Chrome lives somewhere unusual, point `CHROME_BINARY` at the binary:
 
 ```bash
 export CHROME_BINARY=/usr/bin/chromium
 ```
 
-## Użycie
+## Usage
 
-### 1. Zaloguj się do Lidl Plus
+### 1. Log in to Lidl Plus
 
 ```bash
 python3 browser_login.py
 ```
 
-Otworzy się okno Chrome z formularzem logowania Lidl Plus (Fidl Plus).
-Zaloguj się ręcznie – token zostanie automatycznie przechwycony
-i zapisany do `data/lidl_tokens.json`.
+A Chrome window opens with the Lidl Plus login form. Log in by hand; the
+token is captured automatically and saved to `data/lidl_tokens.json`.
 
-> Token jest ważny ~1 godzinę. Refresh token pozwala go odświeżyć bez
-> ponownego logowania; harmonogram robi to co kilka godzin, więc konto
-> nie powinno samo „wylogować się” po 30 dniach.
+> The access token is valid for about an hour. The refresh token renews it
+> without logging in again; the scheduler does that every few hours, so an
+> account should not quietly log itself out after 30 days.
 
-Uruchomione bez parametrów zapisuje `lidl_tokens.json`, który można wgrać
-na stronie `/login` (Metoda 2). Z `--db` zapisuje tokeny prosto do bazy
-aplikacji (`--account-id N` – konkretne konto).
+Without arguments the script writes `lidl_tokens.json`, which you can upload
+on the `/login` page (Method 2). With `--db` it writes the tokens straight
+into the app's database (`--account-id N` for a specific account).
 
-### 2. Uruchom aplikację
+### 2. Start the app
 
 ```bash
 python3 app.py
 ```
 
-Aplikacja otworzy się automatycznie na `http://localhost:8000`.
+The app opens automatically at `http://localhost:8000`.
 
-### 3. Pobierz paragony
+### 3. Download the receipts
 
-Wejdź na stronę `/sync` lub kliknij **Odśwież dane** w nawigacji.
-Pierwsze pobieranie wszystkich paragonów może potrwać kilka minut;
-później harmonogram codziennie dociąga tylko nowe.
+Go to `/sync` or click **Odśwież dane** in the navigation bar. The first
+download of all receipts can take a few minutes; after that the scheduler
+fetches only the new ones every day.
 
 ---
 
-## Struktura projektu
+## Project layout
 
 ```
-├── app.py                  # Serwer FastAPI – wszystkie endpointy
-├── db.py                   # SQLite: konta, paragony, historia zadań
-├── services.py             # Odświeżanie tokenów i synchronizacja konta
-├── scheduler.py            # APScheduler: zadania cykliczne
-├── lidl_api.py             # Klient mobilnego API Lidl Plus (OAuth2 PKCE)
-├── browser_login.py        # Logowanie przez prawdziwy Chrome/Chromium
-├── receipt_parser.py       # Parser HTML paragonów + normalizacja nazw
-├── Dockerfile              # Chromium + Xvfb + noVNC + aplikacja
-├── docker-compose.yml      # gotowy obraz z GHCR
-├── docker-compose.dev.yml  # nakładka do budowania lokalnie
-├── docker-entrypoint.sh    # Start Xvfb / x11vnc / noVNC / uvicorn
-├── lidl-callback-handler   # Handler schematu com.lidlplus.app://
-├── templates/              # Szablony Jinja2
+├── app.py                  # FastAPI server – all endpoints
+├── db.py                   # SQLite: accounts, receipts, job history
+├── services.py             # Token refresh and per-account sync
+├── scheduler.py            # APScheduler: recurring jobs
+├── lidl_api.py             # Lidl Plus mobile API client (OAuth2 PKCE)
+├── browser_login.py        # Login through a real Chrome/Chromium
+├── receipt_parser.py       # HTML receipt parser + name normalisation
+├── Dockerfile              # Chromium + Xvfb + noVNC + the app
+├── docker-compose.yml      # ready-made image from GHCR
+├── docker-compose.dev.yml  # overlay for building locally
+├── docker-entrypoint.sh    # Starts Xvfb / x11vnc / noVNC / uvicorn
+├── lidl-callback-handler   # Handler for the com.lidlplus.app:// scheme
+├── templates/              # Jinja2 templates
 │   ├── base.html
 │   ├── index.html
 │   ├── receipts.html
@@ -302,99 +308,98 @@ później harmonogram codziennie dociąga tylko nowe.
 │   ├── login.html
 │   └── sync.html
 ├── requirements.txt
-├── data/                   # fidl.db (konta, tokeny, paragony), radar.duckdb
-│                           # (poza repozytorium)
+├── data/                   # fidl.db (accounts, tokens, receipts), radar.duckdb
+│                           # (not in the repository)
 └── docs/
     └── screenshots/
 ```
 
-## Jak działa logowanie
+## How the login works
 
-Lidl Plus używa **OAuth2 PKCE** z `client_id=LidlPlusNativeClient`.
-Formularz logowania jest chroniony przez **reCAPTCHA Enterprise v3**,
-która blokuje automatyczne requesty HTTP.
+Lidl Plus uses **OAuth2 PKCE** with `client_id=LidlPlusNativeClient`. The
+login form is protected by **reCAPTCHA Enterprise v3**, which blocks
+automated HTTP requests.
 
-Rozwiązanie: `browser_login.py` uruchamia prawdziwą przeglądarkę przez
-Playwright – dostaje ona dobry score od reCAPTCHA. Po zalogowaniu Lidl
-przekierowuje na deep link `com.lidlplus.app://callback?code=...`, który
-przechwytujemy trzema drogami:
+The workaround: `browser_login.py` starts a real browser through Playwright,
+which gets a good reCAPTCHA score. After the login Lidl redirects to the deep
+link `com.lidlplus.app://callback?code=...`, which is captured three ways:
 
-1. **CDP** (`Network.requestWillBeSent`) – widzi też przekierowania 302
-   na custom scheme, których Playwright czasem nie raportuje,
-2. zdarzenia Playwright – `request`, `framenavigated`, `popup`,
-3. **handler `xdg-open`** – system oddaje URL skryptowi
-   `lidl-callback-handler`, który zapisuje go do pliku (Linux/Docker).
+1. **CDP** (`Network.requestWillBeSent`) – also sees 302 redirects to the
+   custom scheme, which Playwright does not always report,
+2. Playwright events – `request`, `framenavigated`, `popup`,
+3. an **`xdg-open` handler** – the system hands the URL to the
+   `lidl-callback-handler` script, which writes it to a file (Linux/Docker).
 
-Kod jest następnie wymieniany na tokeny.
+The code is then exchanged for tokens.
 
-## Ceny i rabaty
+## Prices and discounts
 
-Paragony rozróżniają dwie ceny:
+Receipts carry two prices:
 
-- **cena podstawowa** – `currentUnitPrice`, cena regularna z półki,
-- **cena promocyjna** – kwota faktycznie zapłacona, po odliczeniu kuponów
-  Lidl Plus.
+- **base price** – `currentUnitPrice`, the regular shelf price,
+- **promotional price** – the amount actually paid, after Lidl Plus coupons.
 
-Statystyki, wykresy i rankingi liczone są na cenach promocyjnych.
+Stats, charts and rankings use the promotional prices.
 
-> `totalAmount` zwracane przez API jest już **po** odliczeniu rabatów –
-> `totalDiscount` służy tylko do pokazania, ile zaoszczędzono.
+> `totalAmount` returned by the API is already **net** of discounts;
+> `totalDiscount` is only used to show how much you saved.
 
-## Dane
+## Data
 
-Konta, tokeny, paragony i historia zadań są w bazie SQLite
-`data/fidl.db` (katalog konfigurowalny przez `DATA_DIR`). Katalog nie jest
-commitowany do repozytorium (`.gitignore`).
+Accounts, tokens, receipts and job history live in the SQLite database
+`data/fidl.db` (the directory is set with `DATA_DIR`). The directory is not
+committed to the repository (`.gitignore`).
 
-> **Aktualizacja ze starszej wersji:** przy pierwszym starcie istniejące
-> `lidl_tokens.json` i `receipts.json` (także stara nazwa
-> `wszystkie_paragony_szczegoly.json`) są importowane jako „Konto 1”,
-> a pliki dostają końcówkę `.migrated`. Nic nie jest kasowane.
+> **Upgrading from an older version:** on the first start, existing
+> `lidl_tokens.json` and `receipts.json` files (including the old name
+> `wszystkie_paragony_szczegoly.json`) are imported as "Konto 1" (account 1)
+> and renamed with a `.migrated` suffix. Nothing is deleted.
 
-Synchronizacja tylko **dodaje** paragony – błąd API w trakcie pobierania
-nie usuwa niczego, co już jest w bazie.
+Syncing only ever **adds** receipts: an API error during a download never
+removes anything already in the database.
 
-API zwraca dwa formaty paragonów:
-- **JSON** (`itemsLine`) – nowsze paragony, pełna struktura produktów
-- **HTML** (`htmlPrintedReceipt`) – starsze paragony, `receipt_parser.py`
-  parsuje je do tego samego formatu, razem z liniami rabatów
+The API returns receipts in two formats:
+- **JSON** (`itemsLine`) – newer receipts, with a full product structure
+- **HTML** (`htmlPrintedReceipt`) – older receipts; `receipt_parser.py`
+  parses them into the same format, including the discount lines
 
-## Rozwój
+## Development
 
 ```bash
 pip install -r requirements-dev.txt
 
-pytest          # testy
+pytest          # tests
 ruff check .    # lint
 ruff check --fix .
 ```
 
-Testy używają wyłącznie syntetycznych paragonów (`tests/conftest.py`) –
-prawdziwe dane nigdy nie trafiają do repozytorium. Pokrywają logikę,
-która najłatwiej cicho się psuje: parsowanie rabatów z HTML, przypisanie
-kuponu do właściwej pozycji, towary na wagę oraz renderowanie szablonów.
+The tests only use synthetic receipts (`tests/conftest.py`); real data never
+goes into the repository. They cover the logic that breaks most quietly:
+parsing discounts from HTML, attaching a coupon to the right line, goods sold
+by weight, and template rendering.
 
-CI (GitHub Actions) uruchamia lint i testy na Pythonie 3.11 i 3.12.
+CI (GitHub Actions) runs lint and tests on Python 3.11 and 3.12.
 
-### Wydania
+### Releases
 
-Po każdym merge'u na `master` Release Drafter aktualizuje szkic wydania.
-Numer wersji (semver) wynika z tytułów PR-ów w formacie Conventional
-Commits: `feat:` podbija wersję minor, `fix:` i pozostałe – patch, a `!`
-(np. `feat!:`) – major. Etykiety `major` / `minor` na PR-ze wymuszają
-podbicie, a `skip-changelog` pomija PR w notatkach.
+After every merge to `master`, Release Drafter updates a draft release. The
+version (semver) comes from the PR titles, which follow Conventional Commits:
+`feat:` bumps the minor version, `fix:` and everything else bump the patch
+version, and `!` (e.g. `feat!:`) bumps the major version. The `major` /
+`minor` labels on a PR force a bump, and `skip-changelog` leaves a PR out of
+the notes.
 
-Opublikowanie szkicu (**Releases** → szkic → **Publish release**) buduje
-obraz `linux/amd64` + `linux/arm64` i wypycha go do GHCR z tagami
-`1.4.2`, `1.4`, `1` i `latest` (wydania oznaczone jako pre-release nie
-dostają `latest`). Sam merge na `master` nie publikuje już obrazu.
+Publishing the draft (**Releases** → the draft → **Publish release**) builds
+the `linux/amd64` + `linux/arm64` image and pushes it to GHCR tagged `1.4.2`,
+`1.4`, `1` and `latest` (releases marked as pre-release do not get
+`latest`). Merging to `master` alone no longer publishes an image.
 
-## Technologie
+## Tech stack
 
 - **FastAPI** + **Uvicorn** – backend
-- **Jinja2** – szablony HTML
-- **HTMX** – dynamiczne UI bez pisania JS
-- **Chart.js** – wykresy zmian cen
-- **Playwright** – logowanie przez Chrome/Chromium
-- **BeautifulSoup4** – parsowanie HTML paragonów
-- **Xvfb + noVNC** – podgląd okna przeglądarki w Dockerze
+- **Jinja2** – HTML templates
+- **HTMX** – dynamic UI without writing JS
+- **Chart.js** – price charts
+- **Playwright** – login through Chrome/Chromium
+- **BeautifulSoup4** – parsing HTML receipts
+- **Xvfb + noVNC** – browser window preview in Docker
