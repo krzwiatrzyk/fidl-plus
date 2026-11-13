@@ -5,13 +5,12 @@ from collections import defaultdict
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 
 import db
 import services
 
 SYNC_CRON = os.getenv("SYNC_CRON", "0 6 * * *")
-TOKEN_REFRESH_HOURS = float(os.getenv("TOKEN_REFRESH_HOURS", "6"))
+TOKEN_REFRESH_CRON = os.getenv("TOKEN_REFRESH_CRON", "0 */6 * * *")
 ENABLED = os.getenv("SCHEDULER_ENABLED", "1") != "0"
 
 
@@ -48,8 +47,8 @@ JOBS = {
     "refresh_tokens": {
         "name": "Odświeżanie tokenów",
         "func": refresh_tokens,
-        "trigger": IntervalTrigger(hours=TOKEN_REFRESH_HOURS),
-        "schedule": f"co {TOKEN_REFRESH_HOURS:g} godz.",
+        "trigger": CronTrigger.from_crontab(TOKEN_REFRESH_CRON),
+        "schedule": f"cron: {TOKEN_REFRESH_CRON}",
     },
 }
 

@@ -74,3 +74,18 @@ def test_scheduler_exposes_next_run_times():
         assert jobs["refresh_tokens"]["next_run"]
     finally:
         scheduler.shutdown()
+
+
+def test_schedules_come_from_env(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("SYNC_CRON", "30 7 * * 1")
+    monkeypatch.setenv("TOKEN_REFRESH_CRON", "*/20 * * * *")
+    try:
+        importlib.reload(scheduler)
+        assert scheduler.JOBS["sync_receipts"]["schedule"] == "cron: 30 7 * * 1"
+        assert scheduler.JOBS["refresh_tokens"]["schedule"] == "cron: */20 * * * *"
+        assert str(scheduler.JOBS["refresh_tokens"]["trigger"].fields[6]) == "*/20"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(scheduler)
