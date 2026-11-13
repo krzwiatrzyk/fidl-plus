@@ -248,37 +248,30 @@ Fetch a single receipt with its products and prices.
 
         return response.json()
 
-    def get_all_tickets(self, max_pages: int = 10) -> list[dict]:
+    def get_all_tickets(self, max_pages: int = 10, known_ids: set[str] | None = None) -> list[dict]:
         """
-Fetch every receipt, following pagination.
+        Fetch receipts, following pagination.
 
-        Args:
-            max_pages: Maksymalna liczba stron do pobrania
-
-        Returns:
-            All receipts
+        Errors propagate on purpose: a partial list returned after a failure
+        used to be treated as the full dataset and overwrote stored receipts.
+        With known_ids, paging stops at the first page made only of receipts
+        we already have, since the API lists the newest first.
         """
         all_tickets = []
         page = 1
 
         while page <= max_pages:
-            try:
-                result = self.get_tickets(page=page)
-                tickets = result.get('tickets', [])  # FIXED: klucz to 'tickets' nie 'records'
+            result = self.get_tickets(page=page)
+            tickets = result.get('tickets', [])
+            if not tickets:
+                break
 
-                if not tickets:
-                    break
+            all_tickets.extend(tickets)
+            page += 1
 
-                all_tickets.extend(tickets)
-                page += 1
-
-                # Check whether more pages follow
-                total_count = result.get('totalCount', 0)
-                if len(all_tickets) >= total_count:
-                    break
-
-            except Exception as e:
-                print(f"Błąd pobierania strony {page}: {e}")
+            if known_ids is not None and all(t.get('id') in known_ids for t in tickets):
+                break
+            if len(all_tickets) >= result.get('totalCount', 0):
                 break
 
         return all_tickets

@@ -106,8 +106,10 @@ def load_receipts() -> list:
 
 
 def save_receipts(receipts: list):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+    tmp = f"{DATA_FILE}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(receipts, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, DATA_FILE)
 
 
 def parse_price(val) -> float:
@@ -674,6 +676,55 @@ async def sync_page(request: Request):
     return templates.TemplateResponse(request=request, name="sync.html", context={"request": request})
 
 
+def run_sync():
+    sync_state["running"] = True
+    sync_state["count"] = 0
+    sync_state["total"] = 0
+    sync_state["error"] = None
+    sync_state["done"] = False
+    try:
+        api = load_api()
+        if not api:
+            sync_state["error"] = "Brak tokenów - zaloguj się najpierw."
+            return
+        try:
+            api.refresh_access_token()
+            api.save_tokens(TOKENS_FILE)
+        except Exception as e:
+            sync_state["error"] = f"Nie udało się odświeżyć tokenu - zaloguj się ponownie. ({e})"
+            return
+
+        existing = {}
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, encoding="utf-8") as f:
+                for r in json.load(f):
+                    if r.get("id"):
+                        existing[r["id"]] = r
+
+        tickets = api.get_all_tickets(max_pages=100, known_ids=set(existing))
+        new_tickets = [t for t in tickets if t.get("id") and t["id"] not in existing]
+        sync_state["total"] = len(new_tickets)
+
+        # Receipts are only ever added: the stored dataset is the source of
+        # truth and the API listing is used just to discover new ids.
+        for i, ticket in enumerate(new_tickets, start=1):
+            try:
+                existing[ticket["id"]] = api.get_ticket_details(ticket["id"])
+            except Exception:
+                existing[ticket["id"]] = ticket
+            sync_state["count"] = i
+            if i % 10 == 0:
+                save_receipts(list(existing.values()))
+
+        save_receipts(list(existing.values()))
+        sync_state["done"] = True
+
+    except Exception as e:
+        sync_state["error"] = str(e)
+    finally:
+        sync_state["running"] = False
+
+
 @app.post("/sync/start", response_class=HTMLResponse)
 async def sync_start():
     """Pobierz paragony z API w tle."""
@@ -684,60 +735,6 @@ async def sync_start():
                 Synchronizacja już trwa...
             </div>
         """)
-
-    def run_sync():
-        sync_state["running"] = True
-        sync_state["count"] = 0
-        sync_state["total"] = 0
-        sync_state["error"] = None
-        sync_state["done"] = False
-        try:
-            api = load_api()
-            if not api:
-                sync_state["error"] = "Brak tokenów - zaloguj się najpierw."
-                return
-            try:
-                api.refresh_access_token()
-                api.save_tokens(TOKENS_FILE)
-            except Exception:
-                pass
-
-            # Fetch the list of all receipts
-            tickets = api.get_all_tickets(max_pages=100)
-            tickets = [t for t in tickets if t.get("id")]
-            sync_state["total"] = len(tickets)
-
-            # Load what we already have so we do not download it again
-            existing = {}
-            if os.path.exists(DATA_FILE):
-                with open(DATA_FILE, encoding="utf-8") as f:
-                    for r in json.load(f):
-                        if r.get("id"):
-                            existing[r["id"]] = r
-
-            detailed = []
-            for ticket in tickets:
-                tid = ticket["id"]
-                if tid in existing:
-                    detailed.append(existing[tid])
-                else:
-                    try:
-                        detail = api.get_ticket_details(tid)
-                        detailed.append(detail)
-                    except Exception:
-                        detailed.append(ticket)
-                sync_state["count"] = len(detailed)
-                # Flush every 10 receipts so the progress bar stays current
-                if len(detailed) % 10 == 0:
-                    save_receipts(detailed)
-
-            save_receipts(detailed)
-            sync_state["done"] = True
-
-        except Exception as e:
-            sync_state["error"] = str(e)
-        finally:
-            sync_state["running"] = False
 
     threading.Thread(target=run_sync, daemon=True).start()
     return HTMLResponse("""
@@ -761,7 +758,7 @@ async def sync_status():
         count = sync_state["count"]
         return HTMLResponse(f"""
             <div id="sync-status" class="status-ok">
-                Pobrano {count} paragonów.
+                Pobrano {count} nowych paragonów.
                 <a href="/">Przejdź do dashboardu</a>
             </div>
         """)
