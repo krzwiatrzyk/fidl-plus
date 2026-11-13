@@ -374,9 +374,20 @@ prawdziwe dane nigdy nie trafiają do repozytorium. Pokrywają logikę,
 która najłatwiej cicho się psuje: parsowanie rabatów z HTML, przypisanie
 kuponu do właściwej pozycji, towary na wagę oraz renderowanie szablonów.
 
-CI (GitHub Actions) uruchamia lint i testy na Pythonie 3.11 i 3.12,
-a po merge'u na `master` buduje i publikuje obraz `linux/amd64` +
-`linux/arm64` do GHCR.
+CI (GitHub Actions) uruchamia lint i testy na Pythonie 3.11 i 3.12.
+
+### Wydania
+
+Po każdym merge'u na `master` Release Drafter aktualizuje szkic wydania.
+Numer wersji (semver) wynika z tytułów PR-ów w formacie Conventional
+Commits: `feat:` podbija wersję minor, `fix:` i pozostałe – patch, a `!`
+(np. `feat!:`) – major. Etykiety `major` / `minor` na PR-ze wymuszają
+podbicie, a `skip-changelog` pomija PR w notatkach.
+
+Opublikowanie szkicu (**Releases** → szkic → **Publish release**) buduje
+obraz `linux/amd64` + `linux/arm64` i wypycha go do GHCR z tagami
+`1.4.2`, `1.4`, `1` i `latest` (wydania oznaczone jako pre-release nie
+dostają `latest`). Sam merge na `master` nie publikuje już obrazu.
 
 ## Technologie
 
