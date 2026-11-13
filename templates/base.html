@@ -295,6 +295,7 @@
     <a href="/insights">Insights</a>
     <a href="/top-products">Top produkty</a>
     <a href="/jobs">Harmonogram</a>
+    {% if radar_enabled %}<a href="/__radar/" target="_blank" rel="noopener" title="Requesty, zapytania SQL i wyjątki (fastapi-radar)">Radar</a>{% endif %}
     <div class="spacer"></div>
     {% set accounts_nav = nav_accounts() %}
     {% if accounts_nav|length > 1 %}

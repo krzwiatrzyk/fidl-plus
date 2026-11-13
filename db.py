@@ -1,9 +1,10 @@
 """SQLite storage for accounts, receipts and scheduler runs."""
 import json
 import os
-import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
+
+from sqlalchemy import create_engine, event
 
 from lidl_api import decode_jwt
 
@@ -48,7 +49,9 @@ CREATE TABLE IF NOT EXISTS job_runs (
 CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs(job_id, id);
 """
 
-_path: str | None = None
+# Plain SQL, executed through SQLAlchemy only so that fastapi-radar can
+# observe the queries; there is no ORM here.
+engine = None
 # Bumped on every receipt write so callers can cache parsed receipts. Only the
 # web process writes receipts, so an in-process counter is enough.
 receipts_version = 0
@@ -59,25 +62,53 @@ def now() -> str:
 
 
 def init(path: str) -> None:
-    global _path, receipts_version
-    _path = path
+    global engine, receipts_version
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    if engine is not None:
+        engine.dispose()
+    engine = create_engine(f"sqlite:///{path}", connect_args={"timeout": 30})
+
+    @event.listens_for(engine, "connect")
+    def _on_connect(dbapi_conn, _record):
+        dbapi_conn.execute("PRAGMA foreign_keys = ON")
+        dbapi_conn.execute("PRAGMA journal_mode = WAL")
+
     with connect() as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(SCHEMA)
+        for statement in SCHEMA.split(";"):
+            if statement.strip():
+                conn.execute(statement)
     receipts_version += 1
+
+
+class _Result:
+    def __init__(self, result):
+        self._result = result
+        self.lastrowid = result.lastrowid
+
+    def fetchone(self):
+        return self._result.mappings().fetchone()
+
+    def fetchall(self):
+        return self._result.mappings().fetchall()
+
+
+class _Connection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql: str, params: tuple = ()) -> _Result:
+        return _Result(self._conn.exec_driver_sql(sql, tuple(params)))
+
+    def executemany(self, sql: str, rows: list[tuple]) -> None:
+        if rows:
+            self._conn.exec_driver_sql(sql, rows)
 
 
 @contextmanager
 def connect():
-    conn = sqlite3.connect(_path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    """A transaction: committed on success, rolled back on error."""
+    with engine.begin() as conn:
+        yield _Connection(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +199,7 @@ def store_login(tokens: dict, account_id: int | None = None) -> int:
         return account_id
 
     with connect() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) AS n FROM accounts").fetchone()["n"]
         label = fields.get("email") or f"Konto {count + 1}"
         columns = ["label", "created_at", *fields]
         cur = conn.execute(
@@ -284,7 +315,7 @@ def migrate_legacy(tokens_file: str, receipts_file: str) -> int | None:
     if not (has_tokens or has_receipts):
         return None
     with connect() as conn:
-        if conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]:
+        if conn.execute("SELECT COUNT(*) AS n FROM accounts").fetchone()["n"]:
             return None
 
     tokens = {}

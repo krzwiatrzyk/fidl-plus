@@ -99,6 +99,26 @@ db.migrate_legacy(
 NOVNC_PORT = os.getenv("NOVNC_PORT", "")
 NOVNC_URL = os.getenv("NOVNC_URL", "")
 
+# fastapi-radar: request/SQL/exception dashboard at /__radar, opt-in because it
+# stores request and response bodies without any auth in front of it.
+RADAR_ENABLED = os.getenv("RADAR_ENABLED", "0") == "1"
+if RADAR_ENABLED:
+    from fastapi_radar import Radar
+
+    radar = Radar(
+        app,
+        db_engine=db.engine,
+        db_path=DATA_DIR,
+        # Bindings would put access/refresh tokens into radar.duckdb.
+        capture_sql_bindings=False,
+        # /login carries token uploads; the rest is htmx polling noise.
+        exclude_paths=["/login", "/sync/status", "/static"],
+        include_in_schema=False,
+        service_name="fidl-plus",
+    )
+    radar.create_tables()
+templates.env.globals["radar_enabled"] = RADAR_ENABLED
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
