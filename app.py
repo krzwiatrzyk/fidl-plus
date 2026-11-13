@@ -15,7 +15,7 @@ import sys
 import threading
 from collections import defaultdict
 from datetime import UTC, datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import uvicorn
 from fastapi import FastAPI, Form, Query, Request
@@ -172,16 +172,56 @@ def selected_account(request: Request) -> int | None:
     return int(value) if value.isdigit() else None
 
 
+def url_with(request: Request, **params) -> str:
+    """The current page with some query params replaced; None drops one. Always back to page 1."""
+    query = {k: v for k, v in request.query_params.items() if k != "page"}
+    for key, value in params.items():
+        if value is None:
+            query.pop(key, None)
+        else:
+            query[key] = str(value)
+    return f"{request.url.path}?{urlencode(query)}" if query else request.url.path
+
+
 templates.env.globals["nav_accounts"] = accounts_with_status
 templates.env.globals["selected_account"] = selected_account
+templates.env.globals["url_with"] = url_with
+
+
+DATE_KEYS = ("date_from", "date_to")
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def date_range(request: Request) -> tuple[str, str]:
+    """(date_from, date_to) as YYYY-MM-DD, "" when unset: the query wins, then the session cookie."""
+    values = []
+    for key in DATE_KEYS:
+        value = request.query_params.get(key, request.cookies.get(key, ""))
+        values.append(value if _DATE_RE.fullmatch(value) else "")
+    return values[0], values[1]
+
+
+templates.env.globals["date_range"] = date_range
+templates.env.globals["date_filter_paths"] = {"/", "/receipts", "/products", "/product",
+                                              "/insights", "/top-products"}
 
 
 @app.middleware("http")
-async def remember_account_filter(request: Request, call_next):
+async def remember_filters(request: Request, call_next):
     response = await call_next(request)
     if "account" in request.query_params:
         response.set_cookie("account", request.query_params["account"], max_age=365 * 86400,
                             samesite="lax")
+    # A session cookie: the range follows you between pages but is gone after
+    # the browser closes, so an old range never silently hides data.
+    for key in DATE_KEYS:
+        if key not in request.query_params:
+            continue
+        value = request.query_params[key]
+        if _DATE_RE.fullmatch(value):
+            response.set_cookie(key, value, samesite="lax")
+        else:
+            response.delete_cookie(key)
     return response
 
 
@@ -197,12 +237,17 @@ def load_receipts() -> list:
 
 
 def scoped_receipts(request: Request) -> list:
-    """Receipts of the account picked in the filter, or of every account."""
+    """Receipts of the account and date range picked in the filters; everything when unset."""
     account_id = selected_account(request)
+    date_from, date_to = date_range(request)
     receipts = load_receipts()
-    if account_id is None:
-        return receipts
-    return [r for r in receipts if r.get("_account_id") == account_id]
+    if account_id is not None:
+        receipts = [r for r in receipts if r.get("_account_id") == account_id]
+    if date_from:
+        receipts = [r for r in receipts if r.get("date", "")[:10] >= date_from]
+    if date_to:
+        receipts = [r for r in receipts if r.get("date", "")[:10] <= date_to]
+    return receipts
 
 
 def parse_price(val) -> float:
@@ -370,8 +415,13 @@ def get_insights(receipts: list) -> dict:
     }
 
 
-def get_top_products(receipts: list) -> dict:
-    """Dane do strony /top-products."""
+def get_top_products(receipts: list, sort: str = "count") -> dict:
+    """
+    Data for /top-products, ranked by quantity bought or by money spent.
+
+    The quantity ranking skips one-off purchases; the spend ranking keeps
+    them, since a single expensive item is exactly where the money went.
+    """
     product_count = defaultdict(float)
     product_spend = defaultdict(float)
     product_last_price = {}
@@ -392,12 +442,12 @@ def get_top_products(receipts: list) -> dict:
             if base_price > 0 and bc and len(bc) >= 8:
                 price_history[name].append((date, promo_price))
 
-    # Ranking by quantity bought
-    top_by_count = sorted(
+    min_count = 2 if sort == "count" else 0
+    top_products = sorted(
         [{"name": k, "count": int(v), "spend": round(product_spend[k], 2),
           "last_price": round(product_last_price.get(k, 0), 2)}
-         for k, v in product_count.items() if v >= 2],
-        key=lambda x: -x["count"]
+         for k, v in product_count.items() if v >= min_count],
+        key=lambda x: (-x[sort], -x["spend" if sort == "count" else "count"])
     )[:20]
 
     # Largest price swings
@@ -428,7 +478,7 @@ def get_top_products(receipts: list) -> dict:
     volatility.sort(key=lambda x: -x["change_pct"])
 
     return {
-        "top_by_count": top_by_count,
+        "top_products": top_products,
         "volatility": volatility[:20],
     }
 
@@ -557,19 +607,12 @@ async def receipts_list(
     request: Request,
     page: int = Query(1, ge=1),
     store: str = Query(""),
-    date_from: str = Query(""),
-    date_to: str = Query(""),
 ):
     all_receipts = scoped_receipts(request)
     receipts = all_receipts
 
-    # Filtrowanie
     if store:
         receipts = [r for r in receipts if store.lower() in r.get("store", {}).get("name", "").lower()]
-    if date_from:
-        receipts = [r for r in receipts if r.get("date", "")[:10] >= date_from]
-    if date_to:
-        receipts = [r for r in receipts if r.get("date", "")[:10] <= date_to]
 
     receipts = sorted(receipts, key=lambda r: r.get("date", ""), reverse=True)
 
@@ -588,8 +631,6 @@ async def receipts_list(
         "pages": pages,
         "total": total,
         "store": store,
-        "date_from": date_from,
-        "date_to": date_to,
         "all_stores": all_stores,
         "show_account": selected_account(request) is None and len(db.list_accounts()) > 1,
         "parse_price": parse_price,
@@ -659,11 +700,13 @@ async def insights(request: Request):
 
 
 @app.get("/top-products", response_class=HTMLResponse)
-async def top_products(request: Request):
-    receipts = scoped_receipts(request)
-    data = get_top_products(receipts)
+async def top_products(request: Request, sort: str = Query("count")):
+    if sort not in ("count", "spend"):
+        sort = "count"
+    data = get_top_products(scoped_receipts(request), sort)
     return templates.TemplateResponse(request=request, name="top_products.html", context={
         "request": request,
+        "sort": sort,
         **data,
     })
 

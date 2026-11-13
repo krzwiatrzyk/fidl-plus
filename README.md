@@ -187,7 +187,7 @@ Logs: **Container Manager** → `fidl-plus` → **Log**, or
 | `LOGIN_TIMEOUT` | `180` | how many seconds to wait for the login |
 | `TZ` | – | time zone, e.g. `Europe/Warsaw`; the scheduler runs in this zone |
 | `SYNC_CRON` | `0 6 * * *` | when to download new receipts (cron syntax) |
-| `TOKEN_REFRESH_HOURS` | `6` | how often to refresh the tokens of all accounts, in hours |
+| `TOKEN_REFRESH_CRON` | `0 */6 * * *` | when to refresh the tokens of all accounts (cron syntax) |
 | `SCHEDULER_ENABLED` | `1` | `0` turns the scheduler off; jobs can then only be run by hand |
 | `RADAR_ENABLED` | `0` | `1` turns on the [fastapi-radar](https://github.com/doganarif/fastapi-radar) dashboard at `/__radar` |
 

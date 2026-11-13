@@ -180,7 +180,7 @@ def test_top_products_spend_uses_amount_after_discount(api_receipt):
     """Spend per product is what was actually paid, not the shelf price."""
     api_receipt["itemsLine"][0]["quantity"] = "2"
     result = app.get_top_products([api_receipt])
-    roll = next(p for p in result["top_by_count"] if p["name"] == "Bułka kajzerka")
+    roll = next(p for p in result["top_products"] if p["name"] == "Bułka kajzerka")
     assert roll["spend"] == pytest.approx(0.92)  # 1.36 - 0.44
 
 
