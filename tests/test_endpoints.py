@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app
+import db
 
 
 @pytest.fixture
@@ -23,9 +24,8 @@ def client(api_receipt, html_receipt, tmp_path, monkeypatch):
         "htmlPrintedReceipt": html_receipt,
     }
 
-    dataset = tmp_path / "receipts.json"
-    dataset.write_text(json.dumps([api_receipt, printed_receipt]), encoding="utf-8")
-    monkeypatch.setattr(app, "DATA_FILE", str(dataset))
+    account_id = db.store_login({"access_token": "a", "refresh_token": "r"})
+    db.upsert_receipts(account_id, [api_receipt, printed_receipt])
 
     return TestClient(app.app)
 
@@ -35,11 +35,16 @@ def client(api_receipt, html_receipt, tmp_path, monkeypatch):
     "/receipts",
     "/insights",
     "/top-products",
-    "/search?q=kajzerka",
-    "/search?q=",
+    "/products",
+    "/products?q=kajzerka",
+    "/products?q=nic-takiego",
+    "/products?sort=spend&page=2",
+    "/products?sort=bogus",
     "/product?name=Bu%C5%82ka%20kajzerka",
     "/product?name=",
     "/login",
+    "/login?account_id=1",
+    "/accounts",
     "/receipt/TEST-API-1",
     "/receipt/TEST-HTML-1",
     "/receipt/TEST-HTML-1/print",
@@ -85,15 +90,13 @@ def test_login_page_with_novnc_shows_preview_button(client, monkeypatch):
     assert ":6080/vnc.html" in client.get("/login").text
 
 
-def test_amounts_render_when_api_returns_a_string(client, api_receipt, tmp_path, monkeypatch):
+def test_amounts_render_when_api_returns_a_string(client, api_receipt):
     """
     REGRESSION: templates used "%.2f"|format(totalAmount), which crashed the
     page whenever the API returned the amount as a string.
     """
     api_receipt["totalAmount"] = "49,80"
-    dataset = tmp_path / "string_amounts.json"
-    dataset.write_text(json.dumps([api_receipt]), encoding="utf-8")
-    monkeypatch.setattr(app, "DATA_FILE", str(dataset))
+    db.upsert_receipts(1, [api_receipt])
 
     for path in ("/", "/receipts", "/insights", "/receipt/TEST-API-1"):
         response = client.get(path)
@@ -101,11 +104,8 @@ def test_amounts_render_when_api_returns_a_string(client, api_receipt, tmp_path,
     assert "49.80 zł" in client.get("/receipt/TEST-API-1").text
 
 
-def test_token_upload_accepts_a_valid_file(client, tmp_path, monkeypatch):
+def test_token_upload_accepts_a_valid_file(client):
     """Fallback login path: uploading a lidl_tokens.json produced elsewhere."""
-    target = tmp_path / "lidl_tokens.json"
-    monkeypatch.setattr(app, "TOKENS_FILE", str(target))
-
     tokens = {"access_token": "abc", "refresh_token": "def"}
     response = client.post(
         "/login/token",
@@ -113,15 +113,13 @@ def test_token_upload_accepts_a_valid_file(client, tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert json.loads(target.read_text(encoding="utf-8")) == tokens
+    assert [a["refresh_token"] for a in db.list_accounts()][-1] == "def"
 
 
 @pytest.mark.parametrize("payload", ["not json at all", '{"foo": "bar"}'])
-def test_token_upload_rejects_a_bad_file(client, tmp_path, monkeypatch, payload):
-    """A malformed file must not overwrite working tokens."""
-    target = tmp_path / "lidl_tokens.json"
-    target.write_text('{"access_token": "keep-me"}', encoding="utf-8")
-    monkeypatch.setattr(app, "TOKENS_FILE", str(target))
+def test_token_upload_rejects_a_bad_file(client, payload):
+    """A malformed file must not touch stored accounts."""
+    before = db.list_accounts()
 
     response = client.post(
         "/login/token",
@@ -130,4 +128,60 @@ def test_token_upload_rejects_a_bad_file(client, tmp_path, monkeypatch, payload)
 
     assert response.status_code == 200
     assert "Błąd" in response.text
-    assert json.loads(target.read_text(encoding="utf-8")) == {"access_token": "keep-me"}
+    assert db.list_accounts() == before
+
+
+@pytest.fixture
+def two_accounts(client, api_receipt):
+    second = db.store_login({"access_token": "b", "refresh_token": "s"})
+    db.update_account(second, label="Żona")
+    db.upsert_receipts(second, [{**api_receipt, "id": "SPOUSE-1", "store": {"name": "Lidl Żony"}}])
+    return second
+
+
+def test_account_filter_limits_receipts_and_is_remembered(client, two_accounts):
+    everything = client.get("/receipts?account=all").text
+    assert "Lidl Żony" in everything and "Lidl Testowa 1" in everything
+    assert "Konto</th>" in everything
+
+    only_spouse = client.get(f"/receipts?account={two_accounts}").text
+    assert "Lidl Żony" in only_spouse and "Lidl Testowa 1" not in only_spouse
+
+    assert "Lidl Testowa 1" not in client.get("/receipts").text
+
+
+def test_dashboard_shows_spend_per_account(client, two_accounts):
+    body = client.get("/?account=all").text
+    assert "Żona" in body
+    assert "Wydatki" in body
+
+
+def test_rename_and_delete_account(client, two_accounts):
+    client.post(f"/accounts/{two_accounts}/rename", data={"label": "Anna"})
+    assert db.get_account(two_accounts)["label"] == "Anna"
+    assert "Anna" in client.get("/receipts?account=all").text
+
+    client.post(f"/accounts/{two_accounts}/delete")
+    assert db.get_account(two_accounts) is None
+    assert "SPOUSE-1" not in client.get("/receipts?account=all").text
+
+
+def test_login_status_reports_the_new_login(client, monkeypatch):
+    db.update_account(1, refresh_obtained_at="2026-01-01T00:00:00+00:00")
+    monkeypatch.setitem(app.login_state, "started_at", db.now())
+    monkeypatch.setitem(app.login_state, "running", True)
+    assert "Czekam" in client.get("/login/status").text
+
+    db.store_login({"access_token": "x", "refresh_token": "fresh"})
+    assert "Zalogowano" in client.get("/login/status").text
+
+
+def test_search_redirects_to_products(client):
+    response = client.get("/search?q=mleko", follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/products?q=mleko"
+
+
+def test_products_lists_everything_without_a_query(client):
+    body = client.get("/products").text
+    assert "Bułka kajzerka" in body and "Mleko" in body

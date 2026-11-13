@@ -14,3 +14,6 @@ wszystkie_paragony_szczegoly.json
 data
 
 docs/screenshots
+*.db
+*.db-*
+*.duckdb

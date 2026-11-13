@@ -8,10 +8,14 @@ Pobiera dane przez mobilne API Lidl Plus i wyświetla je w przeglądarce.
 
 ## Funkcje
 
-- **Dashboard** – statystyki wydatków, ulubiony sklep, ostatnie zakupy
-- **Lista paragonów** – wszystkie zakupy z filtrowaniem po sklepie i dacie
+- **Wiele kont** – np. twoje i współmałżonka; dane widać razem albo osobno (filtr w nawigacji)
+- **Stan logowania** – czy tokeny działają, kiedy były odświeżone, kiedy była synchronizacja
+- **Dashboard** – statystyki wydatków, ulubiony sklep, ostatnie zakupy, wydatki per konto
+- **Lista paragonów** – wszystkie zakupy z filtrowaniem po sklepie, dacie i koncie
 - **Szczegóły paragonu** – pełna lista produktów z cenami i rabatami
-- **Wyszukiwarka** – znajdź produkt po nazwie, zobacz ile razy kupiony
+- **Produkty** – wszystkie kupione produkty z wyszukiwaniem, sortowaniem i zakresem cen
+- **Harmonogram** – codzienne pobieranie paragonów i odświeżanie tokenów bez klikania,
+  z historią uruchomień i przyciskiem „Uruchom teraz”
 - **Historia ceny** – wykres zmiany ceny produktu w czasie
 - **Normalizacja nazw** – ten sam produkt pod różnymi nazwami jest scalany po kodzie kreskowym
 
@@ -58,8 +62,14 @@ Pierwsze pobranie trwa chwilę – obraz waży ok. 2 GB, bo zawiera Chromium.
 2. Kliknij **Otwórz przeglądarkę i zaloguj się**
 3. Otworzy się druga karta z obrazem przeglądarki działającej w kontenerze
    (noVNC, port 6080). Zaloguj się w niej normalnie do Lidl Plus.
-4. Token zostanie przechwycony sam i zapisany w `./data/lidl_tokens.json`
-5. Wróć na `http://localhost:8000` i kliknij **Odśwież dane**
+4. Token zostanie przechwycony sam i zapisany w bazie `./data/fidl.db`
+5. Wróć na `http://localhost:8000` i kliknij **Odśwież dane** – kolejne
+   paragony harmonogram pobierze już sam
+
+Kolejne konto (np. współmałżonka) dodasz przez **Konta** → **Dodaj konto**.
+Zalogowanie się na konto, które już jest na liście, aktualizuje je zamiast
+tworzyć duplikat. Stan każdego konta widać w nawigacji (zielona / żółta /
+czerwona kropka) i na stronie **Konta**.
 
 Logujesz się ręcznie, w widocznym oknie, bo Lidl potrafi zażądać kodu SMS
 albo captchy – tryb w pełni automatyczny by na tym poległ.
@@ -169,7 +179,24 @@ Logi: **Container Manager** → `fidl-plus` → **Dziennik**, albo
 | `NOVNC_PORT` | `6080` | port podglądu przeglądarki |
 | `NOVNC_URL` | – | pełny adres noVNC, gdy stoisz za reverse proxy |
 | `LOGIN_TIMEOUT` | `180` | ile sekund czekać na zalogowanie |
-| `TZ` | – | strefa czasowa, np. `Europe/Warsaw` |
+| `TZ` | – | strefa czasowa, np. `Europe/Warsaw` – według niej działa harmonogram |
+| `SYNC_CRON` | `0 6 * * *` | kiedy pobierać nowe paragony (składnia crona) |
+| `TOKEN_REFRESH_HOURS` | `6` | co ile godzin odświeżać tokeny wszystkich kont |
+| `SCHEDULER_ENABLED` | `1` | `0` wyłącza harmonogram; zadania da się wtedy uruchamiać tylko ręcznie |
+| `RADAR_ENABLED` | `0` | `1` włącza panel [fastapi-radar](https://github.com/doganarif/fastapi-radar) pod `/__radar` |
+
+Harmonogram działa wewnątrz procesu aplikacji, więc uvicorn musi działać
+z **jednym workerem** (tak jest w obrazie). Kilka workerów oznaczałoby
+kilka harmonogramów pobierających te same paragony naraz.
+
+### fastapi-radar
+
+Z `RADAR_ENABLED=1` w nawigacji pojawia się link **Radar**: lista requestów
+z czasami, zapytania SQL do bazy i wyjątki ze stack trace'ami. Dane trzyma
+w `DATA_DIR/radar.duckdb` (24 h). Domyślnie jest wyłączony, bo zapisuje
+treść requestów i odpowiedzi, nie ma żadnego logowania i pozwala
+„odtworzyć” zapisany request. Ścieżki `/login*` i parametry zapytań SQL
+nie są zapisywane, żeby tokeny nie trafiły do panelu.
 
 Zmiana portu aplikacji – w `docker-compose.yml`:
 
@@ -223,8 +250,13 @@ Otworzy się okno Chrome z formularzem logowania Lidl Plus (Fidl Plus).
 Zaloguj się ręcznie – token zostanie automatycznie przechwycony
 i zapisany do `data/lidl_tokens.json`.
 
-> Token jest ważny ~1 godzinę. Refresh token pozwala go odświeżyć
-> przez 30 dni bez ponownego logowania.
+> Token jest ważny ~1 godzinę. Refresh token pozwala go odświeżyć bez
+> ponownego logowania; harmonogram robi to co kilka godzin, więc konto
+> nie powinno samo „wylogować się” po 30 dniach.
+
+Uruchomione bez parametrów zapisuje `lidl_tokens.json`, który można wgrać
+na stronie `/login` (Metoda 2). Z `--db` zapisuje tokeny prosto do bazy
+aplikacji (`--account-id N` – konkretne konto).
 
 ### 2. Uruchom aplikację
 
@@ -237,7 +269,8 @@ Aplikacja otworzy się automatycznie na `http://localhost:8000`.
 ### 3. Pobierz paragony
 
 Wejdź na stronę `/sync` lub kliknij **Odśwież dane** w nawigacji.
-Pobieranie wszystkich paragonów może potrwać kilka minut.
+Pierwsze pobieranie wszystkich paragonów może potrwać kilka minut;
+później harmonogram codziennie dociąga tylko nowe.
 
 ---
 
@@ -245,10 +278,12 @@ Pobieranie wszystkich paragonów może potrwać kilka minut.
 
 ```
 ├── app.py                  # Serwer FastAPI – wszystkie endpointy
+├── db.py                   # SQLite: konta, paragony, historia zadań
+├── services.py             # Odświeżanie tokenów i synchronizacja konta
+├── scheduler.py            # APScheduler: zadania cykliczne
 ├── lidl_api.py             # Klient mobilnego API Lidl Plus (OAuth2 PKCE)
 ├── browser_login.py        # Logowanie przez prawdziwy Chrome/Chromium
 ├── receipt_parser.py       # Parser HTML paragonów + normalizacja nazw
-├── price_analyzer.py       # Analiza zmian cen
 ├── Dockerfile              # Chromium + Xvfb + noVNC + aplikacja
 ├── docker-compose.yml      # gotowy obraz z GHCR
 ├── docker-compose.dev.yml  # nakładka do budowania lokalnie
@@ -260,12 +295,14 @@ Pobieranie wszystkich paragonów może potrwać kilka minut.
 │   ├── receipts.html
 │   ├── receipt_detail.html
 │   ├── receipt_print.html
-│   ├── search.html
+│   ├── products.html
 │   ├── product.html
+│   ├── accounts.html
+│   ├── jobs.html
 │   ├── login.html
 │   └── sync.html
 ├── requirements.txt
-├── data/                   # Tokeny i paragony: receipts.json, lidl_tokens.json
+├── data/                   # fidl.db (konta, tokeny, paragony), radar.duckdb
 │                           # (poza repozytorium)
 └── docs/
     └── screenshots/
@@ -305,12 +342,17 @@ Statystyki, wykresy i rankingi liczone są na cenach promocyjnych.
 
 ## Dane
 
-Paragony (`receipts.json`) i tokeny (`lidl_tokens.json`) są przechowywane
-lokalnie w katalogu `data/`, konfigurowalnym przez `DATA_DIR`. Katalog nie
-jest commitowany do repozytorium (`.gitignore`).
+Konta, tokeny, paragony i historia zadań są w bazie SQLite
+`data/fidl.db` (katalog konfigurowalny przez `DATA_DIR`). Katalog nie jest
+commitowany do repozytorium (`.gitignore`).
 
-> Starsza nazwa `wszystkie_paragony_szczegoly.json` jest nadal wczytywana,
-> więc aktualizacja nie gubi danych – aplikacja tylko ostrzeże w logu.
+> **Aktualizacja ze starszej wersji:** przy pierwszym starcie istniejące
+> `lidl_tokens.json` i `receipts.json` (także stara nazwa
+> `wszystkie_paragony_szczegoly.json`) są importowane jako „Konto 1”,
+> a pliki dostają końcówkę `.migrated`. Nic nie jest kasowane.
+
+Synchronizacja tylko **dodaje** paragony – błąd API w trakcie pobierania
+nie usuwa niczego, co już jest w bazie.
 
 API zwraca dwa formaty paragonów:
 - **JSON** (`itemsLine`) – nowsze paragony, pełna struktura produktów

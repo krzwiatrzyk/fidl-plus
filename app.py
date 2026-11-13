@@ -4,6 +4,9 @@ Fidl Plus - web UI.
 Run:  python app.py
 Open: http://localhost:8000
 """
+import asyncio
+import contextlib
+import html
 import json
 import os
 import re
@@ -11,19 +14,31 @@ import subprocess
 import sys
 import threading
 from collections import defaultdict
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 import uvicorn
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from lidl_api import LidlPlusAPI
+import db
+import scheduler
+import services
 from receipt_parser import enrich_receipts
 
-app = FastAPI(title="Fidl Plus")
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # In-process scheduler: the app must run as a single uvicorn worker.
+    if scheduler.ENABLED:
+        scheduler.start()
+    yield
+    scheduler.shutdown()
+
+
+app = FastAPI(title="Fidl Plus", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -31,11 +46,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates.env.filters["urlencode"] = lambda s: quote(str(s), safe="")
 templates.env.filters["tojson"]    = lambda v: json.dumps(v, ensure_ascii=False)
 
-# Sync progress - shared between the request and the worker thread
+# Sync of all accounts started from the UI; per-account progress lives in services.progress
 sync_state = {
     "running": False,
-    "count": 0,
-    "total": 0,
+    "new": 0,
     "error": None,
     "done": False,
 }
@@ -71,8 +85,12 @@ def _resolve_data_file(name: str, *legacy_names: str) -> str:
     return current
 
 
-TOKENS_FILE = _resolve_data_file("lidl_tokens.json")
-DATA_FILE = _resolve_data_file("receipts.json", "wszystkie_paragony_szczegoly.json")
+DB_FILE = os.path.join(DATA_DIR, "fidl.db")
+db.init(DB_FILE)
+db.migrate_legacy(
+    _resolve_data_file("lidl_tokens.json"),
+    _resolve_data_file("receipts.json", "wszystkie_paragony_szczegoly.json"),
+)
 
 # Browser preview during login inside Docker (noVNC).
 # NOVNC_PORT  - port on the same host as the app (6080 in the Docker image)
@@ -81,33 +99,110 @@ DATA_FILE = _resolve_data_file("receipts.json", "wszystkie_paragony_szczegoly.js
 NOVNC_PORT = os.getenv("NOVNC_PORT", "")
 NOVNC_URL = os.getenv("NOVNC_URL", "")
 
+# fastapi-radar: request/SQL/exception dashboard at /__radar, opt-in because it
+# stores request and response bodies without any auth in front of it.
+RADAR_ENABLED = os.getenv("RADAR_ENABLED", "0") == "1"
+if RADAR_ENABLED:
+    from fastapi_radar import Radar
+
+    radar = Radar(
+        app,
+        db_engine=db.engine,
+        db_path=DATA_DIR,
+        # Bindings would put access/refresh tokens into radar.duckdb.
+        capture_sql_bindings=False,
+        # /login carries token uploads; the rest is htmx polling noise.
+        exclude_paths=["/login", "/sync/status", "/static"],
+        include_in_schema=False,
+        service_name="fidl-plus",
+    )
+    radar.create_tables()
+templates.env.globals["radar_enabled"] = RADAR_ENABLED
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def load_api() -> LidlPlusAPI | None:
-    """Build an API client from the saved tokens, refreshing them if needed."""
-    if not os.path.exists(TOKENS_FILE):
-        return None
-    api = LidlPlusAPI(country="PL")
-    if api.load_tokens(TOKENS_FILE):
-        return api
-    return None
+def _ago(value: str | None) -> str:
+    if not value:
+        return "nigdy"
+    seconds = (datetime.now(UTC) - datetime.fromisoformat(value)).total_seconds()
+    future = seconds < 0
+    seconds = abs(seconds)
+    if seconds < 60:
+        text = "chwilę"
+    elif seconds < 3600:
+        text = f"{int(seconds // 60)} min"
+    elif seconds < 86400:
+        text = f"{int(seconds // 3600)} godz."
+    else:
+        text = f"{int(seconds // 86400)} dni"
+    if text == "chwilę":
+        return "za chwilę" if future else "przed chwilą"
+    return f"za {text}" if future else f"{text} temu"
+
+
+def _localtime(value: str | None) -> str:
+    if not value:
+        return "-"
+    return datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+templates.env.filters["ago"] = _ago
+templates.env.filters["localtime"] = _localtime
+
+
+def _duration(run: dict) -> str:
+    if not run.get("finished_at"):
+        return "-"
+    seconds = (datetime.fromisoformat(run["finished_at"]) - datetime.fromisoformat(run["started_at"])).seconds
+    return f"{seconds // 60} min {seconds % 60} s" if seconds >= 60 else f"{seconds} s"
+
+
+templates.env.filters["duration"] = _duration
+
+
+def accounts_with_status() -> list[dict]:
+    return [{**a, "status": services.account_status(a)} for a in db.list_accounts()]
+
+
+def selected_account(request: Request) -> int | None:
+    """Account chosen in the nav filter: ?account= wins, then the cookie."""
+    value = request.query_params.get("account", request.cookies.get("account", ""))
+    return int(value) if value.isdigit() else None
+
+
+templates.env.globals["nav_accounts"] = accounts_with_status
+templates.env.globals["selected_account"] = selected_account
+
+
+@app.middleware("http")
+async def remember_account_filter(request: Request, call_next):
+    response = await call_next(request)
+    if "account" in request.query_params:
+        response.set_cookie("account", request.query_params["account"], max_age=365 * 86400,
+                            samesite="lax")
+    return response
+
+
+_receipts_cache: dict = {"version": None, "receipts": []}
 
 
 def load_receipts() -> list:
-    """Wczytaj paragony z pliku cache, sparsuj HTML i znormalizuj nazwy."""
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, encoding="utf-8") as f:
-            raw = json.load(f)
-        receipts, _ = enrich_receipts(raw)
+    """All receipts with HTML printouts parsed and product names normalized."""
+    if _receipts_cache["version"] != db.receipts_version:
+        receipts, _ = enrich_receipts(db.all_receipts())
+        _receipts_cache.update(version=db.receipts_version, receipts=receipts)
+    return _receipts_cache["receipts"]
+
+
+def scoped_receipts(request: Request) -> list:
+    """Receipts of the account picked in the filter, or of every account."""
+    account_id = selected_account(request)
+    receipts = load_receipts()
+    if account_id is None:
         return receipts
-    return []
-
-
-def save_receipts(receipts: list):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(receipts, f, ensure_ascii=False, indent=2)
+    return [r for r in receipts if r.get("_account_id") == account_id]
 
 
 def parse_price(val) -> float:
@@ -386,29 +481,47 @@ def get_product_history(receipts: list, name_query: str) -> list:
     return history
 
 
-def search_products(receipts: list, query: str) -> list:
-    """Find unique products matching the query."""
+def all_products(receipts: list, query: str = "") -> list:
+    """
+    Every product ever bought, optionally filtered by name.
+
+    Names are already unified by barcode in enrich_receipts, so grouping by
+    name merges the same product sold under different labels.
+    """
     query_lower = query.lower()
-    seen = {}
-    for receipt in receipts:
+    products = {}
+    for receipt in sorted(receipts, key=lambda r: r.get("date", "")):
+        date = receipt.get("date", "")[:10]
+        account = receipt.get("_account_label")
         for item in receipt.get("itemsLine", []):
             name = item.get("name", "")
-            if query_lower in name.lower():
-                key = name.lower()
-                base_price, promo_price = item_prices(item)
-                if key not in seen:
-                    seen[key] = {
-                        "name": name,
-                        "base_price": base_price,
-                        "last_price": promo_price,
-                        "count": 1,
-                    }
-                else:
-                    seen[key]["count"] += 1
-                    seen[key]["base_price"] = base_price
-                    seen[key]["last_price"] = promo_price
-    results = sorted(seen.values(), key=lambda x: x["count"], reverse=True)
-    return results[:50]
+            if not name or query_lower not in name.lower():
+                continue
+            base_price, promo_price = item_prices(item)
+            qty = parse_price(item.get("quantity", 1)) or 1.0
+            p = products.setdefault(name.lower(), {
+                "name": name, "count": 0, "spend": 0.0, "min_price": promo_price,
+                "max_price": promo_price, "accounts": [],
+            })
+            p["count"] += 1
+            p["spend"] += promo_price * qty
+            p["base_price"] = base_price
+            p["last_price"] = promo_price
+            p["last_date"] = date
+            p["min_price"] = min(p["min_price"], promo_price)
+            p["max_price"] = max(p["max_price"], promo_price)
+            if account and account not in p["accounts"]:
+                p["accounts"].append(account)
+    return sorted(products.values(), key=lambda x: x["count"], reverse=True)
+
+
+PRODUCT_SORTS = {
+    "count": (lambda p: p["count"], True),
+    "name": (lambda p: p["name"].lower(), False),
+    "spend": (lambda p: p["spend"], True),
+    "last_price": (lambda p: p["last_price"], True),
+    "last_date": (lambda p: p["last_date"], True),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -417,17 +530,25 @@ def search_products(receipts: list, query: str) -> list:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    receipts = load_receipts()
+    receipts = scoped_receipts(request)
     stats = get_stats(receipts)
     coupon_stats = get_coupon_stats(receipts)
     recent = sorted(receipts, key=lambda r: r.get("date", ""), reverse=True)[:20]
-    logged_in = os.path.exists(TOKENS_FILE)
+    accounts = accounts_with_status()
+
+    per_account = []
+    if len(accounts) > 1 and selected_account(request) is None:
+        for a in accounts:
+            own = [r for r in receipts if r.get("_account_id") == a["id"]]
+            per_account.append({**a, "receipts": len(own), "spent": sum(receipt_total(r) for r in own)})
+
     return templates.TemplateResponse(request=request, name="index.html", context={
         "request": request,
         "stats": stats,
         "coupon_stats": coupon_stats,
         "recent": recent,
-        "logged_in": logged_in,
+        "accounts": accounts,
+        "per_account": per_account,
     })
 
 
@@ -439,7 +560,8 @@ async def receipts_list(
     date_from: str = Query(""),
     date_to: str = Query(""),
 ):
-    receipts = load_receipts()
+    all_receipts = scoped_receipts(request)
+    receipts = all_receipts
 
     # Filtrowanie
     if store:
@@ -457,7 +579,7 @@ async def receipts_list(
     receipts_page = receipts[(page - 1) * per_page : page * per_page]
 
     # Store list for the filter dropdown
-    all_stores = sorted({r.get("store", {}).get("name", "") for r in load_receipts() if r.get("store")})
+    all_stores = sorted({r.get("store", {}).get("name", "") for r in all_receipts if r.get("store")})
 
     return templates.TemplateResponse(request=request, name="receipts.html", context={
         "request": request,
@@ -469,6 +591,7 @@ async def receipts_list(
         "date_from": date_from,
         "date_to": date_to,
         "all_stores": all_stores,
+        "show_account": selected_account(request) is None and len(db.list_accounts()) > 1,
         "parse_price": parse_price,
     })
 
@@ -526,7 +649,7 @@ async def receipt_print(request: Request, receipt_id: str):
 
 @app.get("/insights", response_class=HTMLResponse)
 async def insights(request: Request):
-    receipts = load_receipts()
+    receipts = scoped_receipts(request)
     data = get_insights(receipts)
     return templates.TemplateResponse(request=request, name="insights.html", context={
         "request": request,
@@ -537,7 +660,7 @@ async def insights(request: Request):
 
 @app.get("/top-products", response_class=HTMLResponse)
 async def top_products(request: Request):
-    receipts = load_receipts()
+    receipts = scoped_receipts(request)
     data = get_top_products(receipts)
     return templates.TemplateResponse(request=request, name="top_products.html", context={
         "request": request,
@@ -545,20 +668,47 @@ async def top_products(request: Request):
     })
 
 
-@app.get("/search", response_class=HTMLResponse)
-async def search(request: Request, q: str = Query("")):
-    receipts = load_receipts()
-    results = search_products(receipts, q) if q else []
-    return templates.TemplateResponse(request=request, name="search.html", context={
+@app.get("/search")
+async def search(q: str = Query("")):
+    return RedirectResponse(f"/products?q={quote(q)}", status_code=301)
+
+
+@app.get("/products", response_class=HTMLResponse)
+async def products(
+    request: Request,
+    q: str = Query(""),
+    sort: str = Query("count"),
+    page: int = Query(1, ge=1),
+):
+    if sort not in PRODUCT_SORTS:
+        sort = "count"
+    key, reverse = PRODUCT_SORTS[sort]
+    found = sorted(all_products(scoped_receipts(request), q), key=key, reverse=reverse)
+
+    per_page = 50
+    pages = max(1, (len(found) + per_page - 1) // per_page)
+    show_account = selected_account(request) is None and len(db.list_accounts()) > 1
+    columns = [("name", "Produkt"), ("count", "Zakupów"), ("spend", "Wydano"),
+               ("last_price", "Ostatnia cena"), (None, "Zakres cen"), ("last_date", "Ostatnio")]
+    if show_account:
+        columns.append((None, "Konta"))
+
+    return templates.TemplateResponse(request=request, name="products.html", context={
         "request": request,
         "q": q,
-        "results": results,
+        "sort": sort,
+        "page": page,
+        "pages": pages,
+        "total": len(found),
+        "products": found[(page - 1) * per_page : page * per_page],
+        "columns": columns,
+        "show_account": show_account,
     })
 
 
 @app.get("/product", response_class=HTMLResponse)
 async def product(request: Request, name: str = Query("")):
-    receipts = load_receipts()
+    receipts = scoped_receipts(request)
     history = get_product_history(receipts, name) if name else []
 
     # Chart data uses the promotional price, i.e. what was actually paid
@@ -583,11 +733,22 @@ async def product(request: Request, name: str = Query("")):
     })
 
 
+# One login at a time: there is a single Xvfb display and one callback file.
+_login_lock = threading.Lock()
+login_state: dict = {"started_at": None, "account_id": None, "running": False}
+
+
+def _parse_account_id(value) -> int | None:
+    return int(value) if str(value or "").isdigit() else None
+
+
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
+async def login_page(request: Request, account_id: str = Query("")):
+    account = db.get_account(_parse_account_id(account_id) or 0)
     return templates.TemplateResponse(request=request, name="login.html", context={
         "request": request,
-        "status": "",
+        "account": account,
+        "accounts": db.list_accounts(),
         "novnc_port": NOVNC_PORT,
         "novnc_url": NOVNC_URL,
     })
@@ -609,18 +770,16 @@ async def login_upload_token(request: Request):
             tokens = json.loads(content)
             if not isinstance(tokens, dict) or "access_token" not in tokens:
                 raise ValueError("brak pola access_token")
-            os.makedirs(os.path.dirname(os.path.abspath(TOKENS_FILE)), exist_ok=True)
-            with open(TOKENS_FILE, "w", encoding="utf-8") as f:
-                json.dump(tokens, f, ensure_ascii=False, indent=2)
+            db.store_login(tokens, _parse_account_id(form.get("account_id")))
             return HTMLResponse("""
                 <div id="token-upload-status" class="status-ok">
-                    Tokeny wgrane pomyślnie! <a href="/sync">Pobierz paragony</a>
+                    Tokeny wgrane pomyślnie! <a href="/accounts">Przejdź do kont</a>
                 </div>
             """)
         except Exception as e:
             return HTMLResponse(f"""
                 <div id="token-upload-status" class="alert alert-warn">
-                    Błąd: nieprawidłowy plik tokenów ({e})
+                    Błąd: nieprawidłowy plik tokenów ({html.escape(str(e))})
                 </div>
             """)
     return HTMLResponse("""
@@ -631,36 +790,57 @@ async def login_upload_token(request: Request):
 
 
 @app.post("/login/start", response_class=HTMLResponse)
-async def login_start(request: Request):
+async def login_start(account_id: str = Form("")):
     """Run browser_login.py in the background and return a status snippet."""
+    if not _login_lock.acquire(blocking=False):
+        return HTMLResponse("""
+            <div id="login-status" class="alert alert-warn">
+                Inne logowanie już trwa - dokończ je albo poczekaj aż wygaśnie.
+            </div>
+        """)
+
+    target = _parse_account_id(account_id)
+    login_state.update(started_at=db.now(), account_id=target, running=True)
+    command = [sys.executable, "browser_login.py", "--db"]
+    if target:
+        command += ["--account-id", str(target)]
+
     def run_login():
-        subprocess.run(
-            [sys.executable, "browser_login.py"],
-            cwd=os.path.dirname(os.path.abspath(__file__))
-        )
-    thread = threading.Thread(target=run_login, daemon=True)
-    thread.start()
+        try:
+            subprocess.run(command, cwd=os.path.dirname(os.path.abspath(__file__)))
+        finally:
+            login_state["running"] = False
+            _login_lock.release()
+
+    threading.Thread(target=run_login, daemon=True).start()
     return HTMLResponse("""
         <div id="login-status" class="status-running"
              hx-get="/login/status" hx-trigger="every 2s" hx-swap="outerHTML">
-            Otwieranie Chrome... zaloguj się w oknie przeglądarki.
+            Otwieranie przeglądarki... zaloguj się w jej oknie.
         </div>
     """)
 
 
 @app.get("/login/status", response_class=HTMLResponse)
 async def login_status():
-    if os.path.exists(TOKENS_FILE):
-        # Treat the token as fresh if it was written in the last 5 minutes
-        mtime = os.path.getmtime(TOKENS_FILE)
-        age = datetime.now().timestamp() - mtime
-        if age < 300:
-            return HTMLResponse("""
-                <div id="login-status" class="status-ok">
-                    Zalogowano! <a href="/">Przejdź do dashboardu</a>
-                    &nbsp;|&nbsp; <a href="/sync">Pobierz paragony</a>
-                </div>
-            """)
+    started = login_state["started_at"]
+    if started:
+        for account in db.list_accounts():
+            if login_state["account_id"] and account["id"] != login_state["account_id"]:
+                continue
+            if (account.get("refresh_obtained_at") or "") >= started:
+                return HTMLResponse(f"""
+                    <div id="login-status" class="status-ok">
+                        Zalogowano jako {html.escape(account["label"])}!
+                        <a href="/accounts">Przejdź do kont</a>
+                    </div>
+                """)
+    if not login_state["running"]:
+        return HTMLResponse("""
+            <div id="login-status" class="alert alert-warn">
+                Logowanie nie powiodło się albo przekroczono czas. Spróbuj ponownie.
+            </div>
+        """)
     return HTMLResponse("""
         <div id="login-status" class="status-running"
              hx-get="/login/status" hx-trigger="every 2s" hx-swap="outerHTML">
@@ -669,9 +849,69 @@ async def login_status():
     """)
 
 
+@app.get("/accounts", response_class=HTMLResponse)
+async def accounts_page(request: Request):
+    return templates.TemplateResponse(request=request, name="accounts.html", context={
+        "request": request,
+        "accounts": accounts_with_status(),
+        "progress": services.progress,
+    })
+
+
+@app.post("/accounts/{account_id}/refresh")
+async def account_refresh(account_id: int):
+    with contextlib.suppress(Exception):  # the error is recorded on the account
+        await asyncio.to_thread(services.refresh_account, account_id)
+    return RedirectResponse("/accounts", status_code=303)
+
+
+@app.post("/accounts/{account_id}/sync")
+async def account_sync(account_id: int):
+    def run():
+        with contextlib.suppress(Exception):  # the error lands in services.progress
+            services.sync_account(account_id)
+
+    threading.Thread(target=run, daemon=True).start()
+    return RedirectResponse("/accounts", status_code=303)
+
+
+@app.post("/accounts/{account_id}/rename")
+async def account_rename(account_id: int, label: str = Form(...)):
+    if label.strip():
+        db.update_account(account_id, label=label.strip())
+    return RedirectResponse("/accounts", status_code=303)
+
+
+@app.post("/accounts/{account_id}/delete")
+async def account_delete(account_id: int):
+    db.delete_account(account_id)
+    return RedirectResponse("/accounts", status_code=303)
+
+
 @app.get("/sync", response_class=HTMLResponse)
 async def sync_page(request: Request):
     return templates.TemplateResponse(request=request, name="sync.html", context={"request": request})
+
+
+def run_sync():
+    sync_state.update(running=True, new=0, error=None, done=False)
+    try:
+        accounts = db.list_accounts()
+        if not accounts:
+            sync_state["error"] = "Brak kont - zaloguj się najpierw."
+            return
+        errors = []
+        for account in accounts:
+            try:
+                sync_state["new"] += services.sync_account(account["id"])
+            except Exception as e:
+                errors.append(f"{account['label']}: {e}")
+        if errors:
+            sync_state["error"] = "; ".join(errors)
+        else:
+            sync_state["done"] = True
+    finally:
+        sync_state["running"] = False
 
 
 @app.post("/sync/start", response_class=HTMLResponse)
@@ -684,60 +924,6 @@ async def sync_start():
                 Synchronizacja już trwa...
             </div>
         """)
-
-    def run_sync():
-        sync_state["running"] = True
-        sync_state["count"] = 0
-        sync_state["total"] = 0
-        sync_state["error"] = None
-        sync_state["done"] = False
-        try:
-            api = load_api()
-            if not api:
-                sync_state["error"] = "Brak tokenów - zaloguj się najpierw."
-                return
-            try:
-                api.refresh_access_token()
-                api.save_tokens(TOKENS_FILE)
-            except Exception:
-                pass
-
-            # Fetch the list of all receipts
-            tickets = api.get_all_tickets(max_pages=100)
-            tickets = [t for t in tickets if t.get("id")]
-            sync_state["total"] = len(tickets)
-
-            # Load what we already have so we do not download it again
-            existing = {}
-            if os.path.exists(DATA_FILE):
-                with open(DATA_FILE, encoding="utf-8") as f:
-                    for r in json.load(f):
-                        if r.get("id"):
-                            existing[r["id"]] = r
-
-            detailed = []
-            for ticket in tickets:
-                tid = ticket["id"]
-                if tid in existing:
-                    detailed.append(existing[tid])
-                else:
-                    try:
-                        detail = api.get_ticket_details(tid)
-                        detailed.append(detail)
-                    except Exception:
-                        detailed.append(ticket)
-                sync_state["count"] = len(detailed)
-                # Flush every 10 receipts so the progress bar stays current
-                if len(detailed) % 10 == 0:
-                    save_receipts(detailed)
-
-            save_receipts(detailed)
-            sync_state["done"] = True
-
-        except Exception as e:
-            sync_state["error"] = str(e)
-        finally:
-            sync_state["running"] = False
 
     threading.Thread(target=run_sync, daemon=True).start()
     return HTMLResponse("""
@@ -753,22 +939,23 @@ async def sync_status():
     if sync_state.get("error"):
         return HTMLResponse(f"""
             <div id="sync-status" class="alert alert-warn">
-                Błąd: {sync_state["error"]}
+                Błąd: {html.escape(sync_state["error"])}
             </div>
         """)
 
     if sync_state.get("done"):
-        count = sync_state["count"]
+        count = sync_state["new"]
         return HTMLResponse(f"""
             <div id="sync-status" class="status-ok">
-                Pobrano {count} paragonów.
+                Pobrano {count} nowych paragonów.
                 <a href="/">Przejdź do dashboardu</a>
             </div>
         """)
 
     if sync_state.get("running"):
-        count = sync_state["count"]
-        total = sync_state["total"]
+        running = [p for p in services.progress.values() if p["running"]]
+        count = sum(p["count"] for p in running)
+        total = sum(p["total"] for p in running)
         pct = int(count / total * 100) if total else 0
         return HTMLResponse(f"""
             <div id="sync-status" class="status-running"
@@ -796,6 +983,23 @@ async def sync_status():
             Kliknij "Rozpocznij pobieranie" aby pobrać paragony.
         </div>
     """)
+
+
+@app.get("/jobs", response_class=HTMLResponse)
+async def jobs_page(request: Request):
+    return templates.TemplateResponse(request=request, name="jobs.html", context={
+        "request": request,
+        "jobs": scheduler.jobs_overview(),
+        "runs": db.recent_runs(),
+        "enabled": scheduler.scheduler.running,
+    })
+
+
+@app.post("/jobs/{job_id}/run")
+async def job_run_now(job_id: str):
+    if job_id in scheduler.JOBS:
+        scheduler.run_now(job_id)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 # ---------------------------------------------------------------------------

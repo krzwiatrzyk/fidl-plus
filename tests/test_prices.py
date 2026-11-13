@@ -147,11 +147,26 @@ def test_get_stats_sums_discounts(api_receipt):
     assert stats["total_spent"] == pytest.approx(49.80)
 
 
-def test_search_products_returns_both_prices(api_receipt):
-    results = app.search_products([api_receipt], "kajzerka")
+def test_all_products_returns_both_prices(api_receipt):
+    results = app.all_products([api_receipt], "kajzerka")
     assert len(results) == 1
     assert results[0]["base_price"] == 0.34
     assert results[0]["last_price"] == pytest.approx(0.23)
+
+
+def test_all_products_without_query_lists_everything(api_receipt):
+    older = {**api_receipt, "id": "OLDER", "date": "2026-01-01T10:00:00", "_account_label": "Żona",
+             "itemsLine": [{**api_receipt["itemsLine"][1], "currentUnitPrice": "2,99",
+                            "originalAmount": "2,99"}]}
+    products = {p["name"]: p for p in app.all_products([{**api_receipt, "_account_label": "Ja"}, older])}
+
+    assert set(products) == {"Bułka kajzerka", "Mleko"}
+    milk = products["Mleko"]
+    assert milk["count"] == 2
+    assert milk["last_price"] == 3.99  # from the newer receipt, regardless of input order
+    assert (milk["min_price"], milk["max_price"]) == (2.99, 3.99)
+    assert milk["last_date"] == "2026-07-31"
+    assert milk["accounts"] == ["Żona", "Ja"]
 
 
 def test_product_history_returns_both_prices(api_receipt):
@@ -178,7 +193,7 @@ def test_coupon_stats(api_receipt):
 
 def test_empty_dataset_does_not_raise():
     assert app.get_stats([]) == {}
-    assert app.search_products([], "anything") == []
+    assert app.all_products([], "anything") == []
     assert app.get_product_history([], "anything") == []
 
 

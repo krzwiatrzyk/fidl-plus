@@ -13,6 +13,15 @@ from urllib.parse import urlencode
 import requests
 
 
+def decode_jwt(token: str | None) -> dict | None:
+    """Read a JWT payload without verifying it - only for expiry and identity."""
+    try:
+        payload = token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except Exception:
+        return None
+
+
 class LidlPlusAPI:
     """Klient API Lidl Plus"""
 
@@ -248,37 +257,30 @@ Fetch a single receipt with its products and prices.
 
         return response.json()
 
-    def get_all_tickets(self, max_pages: int = 10) -> list[dict]:
+    def get_all_tickets(self, max_pages: int = 10, known_ids: set[str] | None = None) -> list[dict]:
         """
-Fetch every receipt, following pagination.
+        Fetch receipts, following pagination.
 
-        Args:
-            max_pages: Maksymalna liczba stron do pobrania
-
-        Returns:
-            All receipts
+        Errors propagate on purpose: a partial list returned after a failure
+        used to be treated as the full dataset and overwrote stored receipts.
+        With known_ids, paging stops at the first page made only of receipts
+        we already have, since the API lists the newest first.
         """
         all_tickets = []
         page = 1
 
         while page <= max_pages:
-            try:
-                result = self.get_tickets(page=page)
-                tickets = result.get('tickets', [])  # FIXED: klucz to 'tickets' nie 'records'
+            result = self.get_tickets(page=page)
+            tickets = result.get('tickets', [])
+            if not tickets:
+                break
 
-                if not tickets:
-                    break
+            all_tickets.extend(tickets)
+            page += 1
 
-                all_tickets.extend(tickets)
-                page += 1
-
-                # Check whether more pages follow
-                total_count = result.get('totalCount', 0)
-                if len(all_tickets) >= total_count:
-                    break
-
-            except Exception as e:
-                print(f"Błąd pobierania strony {page}: {e}")
+            if known_ids is not None and all(t.get('id') in known_ids for t in tickets):
+                break
+            if len(all_tickets) >= result.get('totalCount', 0):
                 break
 
         return all_tickets
@@ -300,17 +302,29 @@ Fetch the user profile.
 
         return response.json()
 
-    def save_tokens(self, filepath: str = "lidl_tokens.json"):
-        """Zapisuje tokeny do pliku"""
-        tokens = {
-            'access_token': self.access_token,
-            'refresh_token': self.refresh_token,
-            'id_token': self.id_token,
-            'device_id': self.device_id
+    @classmethod
+    def from_tokens(cls, tokens: dict, country: str = "PL") -> "LidlPlusAPI":
+        api = cls(country=country)
+        api.access_token = tokens.get("access_token")
+        api.refresh_token = tokens.get("refresh_token")
+        api.id_token = tokens.get("id_token")
+        if tokens.get("device_id"):
+            api.device_id = tokens["device_id"]
+            api.session.headers["Deviceid"] = api.device_id
+        return api
+
+    def token_dict(self) -> dict:
+        return {
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "id_token": self.id_token,
+            "device_id": self.device_id,
         }
 
+    def save_tokens(self, filepath: str = "lidl_tokens.json"):
+        """Zapisuje tokeny do pliku"""
         with open(filepath, 'w') as f:
-            json.dump(tokens, f, indent=2)
+            json.dump(self.token_dict(), f, indent=2)
 
         print(f"Tokeny zapisane do {filepath}")
 

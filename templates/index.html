@@ -2,13 +2,52 @@
 {% block title %}Dashboard - Fidl Plus{% endblock %}
 {% block content %}
 
-{% if not logged_in %}
+{% if not accounts %}
 <div class="alert alert-warn">
     Nie jesteś zalogowany. <a href="/login" style="color:var(--blue);font-weight:600;">Zaloguj się</a>, aby pobrać paragony.
 </div>
 {% endif %}
+{% for a in accounts if a.status.level != "ok" %}
+<div class="alert alert-warn">
+    <strong>{{ a.label }}</strong>: {{ a.status.text }}.
+    <a href="/login?account_id={{ a.id }}" style="color:var(--blue);font-weight:600;">Zaloguj ponownie</a>
+</div>
+{% endfor %}
 
 <h1>Dashboard</h1>
+
+{% if accounts %}
+<div class="card" style="margin-bottom:1.5rem;">
+    <h2>Konta</h2>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Konto</th>
+                    <th>Status</th>
+                    <th>Token odświeżony</th>
+                    <th>Synchronizacja</th>
+                    {% if per_account %}<th>Paragony</th><th>Wydatki</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+            {% for a in (per_account or accounts) %}
+            <tr>
+                <td style="font-weight:600;"><span class="dot dot-{{ a.status.level }}"></span> {{ a.label }}</td>
+                <td>{{ a.status.text }}</td>
+                <td class="date-cell" title="{{ a.last_refresh_at|localtime }}">{{ a.last_refresh_at|ago }}</td>
+                <td class="date-cell" title="{{ a.last_sync_at|localtime }}">{{ a.last_sync_at|ago }}</td>
+                {% if per_account %}
+                <td><a href="/receipts?account={{ a.id }}">{{ a.receipts }}</a></td>
+                <td class="amount">{{ "%.2f"|format(a.spent) }} zł</td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
 
 {% if stats %}
 <div class="stats-grid">
@@ -61,7 +100,7 @@
     <!-- Wyszukiwarka -->
     <div class="card">
         <h2>Szukaj produktu</h2>
-        <form action="/search" method="get">
+        <form action="/products" method="get">
             <div class="search-bar">
                 <input type="text" name="q" placeholder="np. mleko, chleb, piwo..." autofocus>
                 <button class="btn btn-primary" type="submit">Szukaj</button>
@@ -82,8 +121,8 @@
             <a href="/sync" class="btn btn-yellow" style="text-align:center;text-decoration:none;">
                 Pobierz nowe paragony
             </a>
-            <a href="/login" style="text-align:center;font-size:.9rem;color:var(--muted);text-decoration:none;">
-                Zaloguj / odśwież token
+            <a href="/accounts" style="text-align:center;font-size:.9rem;color:var(--muted);text-decoration:none;">
+                Konta i tokeny
             </a>
         </div>
     </div>
@@ -99,6 +138,7 @@
             <thead>
                 <tr>
                     <th>Data</th>
+                    {% if accounts|length > 1 %}<th>Konto</th>{% endif %}
                     <th>Sklep</th>
                     <th>Produkty</th>
                     <th>Suma</th>
@@ -109,6 +149,7 @@
             {% for r in recent %}
             <tr>
                 <td class="date-cell">{{ r.date[:10] }}</td>
+                {% if accounts|length > 1 %}<td><span class="badge badge-blue">{{ r._account_label }}</span></td>{% endif %}
                 <td class="store-cell">{{ r.get('store', {}).get('name', '-') }}</td>
                 <td>
                     <span class="badge badge-blue">{{ r.get('itemsLine', [])|length }} poz.</span>

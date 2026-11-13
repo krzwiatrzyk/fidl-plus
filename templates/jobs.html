@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Harmonogram - Fidl Plus{% endblock %}
+{% block content %}
+
+<h1>Harmonogram</h1>
+
+{% if not enabled %}
+<div class="alert alert-warn">
+    Harmonogram jest wyłączony (<code>SCHEDULER_ENABLED=0</code>) - zadania można uruchamiać tylko ręcznie.
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:1.5rem;">
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Zadanie</th>
+                    <th>Harmonogram</th>
+                    <th>Ostatnie uruchomienie</th>
+                    <th>Wynik</th>
+                    <th>Następne uruchomienie</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for job in jobs %}
+            {% set last = job.last_run %}
+            <tr>
+                <td style="font-weight:600;">{{ job.name }}</td>
+                <td><code>{{ job.schedule }}</code></td>
+                <td class="date-cell">
+                    {% if last %}{{ last.started_at|localtime }}<br>
+                    <span style="color:var(--muted);font-size:.8rem;">{{ last.started_at|ago }} · {{ "ręcznie" if last.trigger == "manual" else "automatycznie" }}</span>
+                    {% else %}nigdy{% endif %}
+                </td>
+                <td style="max-width:320px;">
+                    {% if job.running %}<span class="badge badge-yellow">trwa…</span>
+                    {% elif last %}
+                    <span class="dot dot-{{ 'ok' if last.status == 'ok' else 'error' }}"></span>
+                    <span style="font-size:.85rem;">{{ last.message }}</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td class="date-cell">
+                    {% if job.next_run %}{{ job.next_run|localtime }}<br>
+                    <span style="color:var(--muted);font-size:.8rem;">{{ job.next_run|ago }}</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td>
+                    <form method="post" action="/jobs/{{ job.id }}/run" class="inline-form">
+                        <button class="btn btn-sm btn-primary" type="submit" {% if job.running %}disabled{% endif %}>
+                            Uruchom teraz
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Historia uruchomień</h2>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>Start</th><th>Zadanie</th><th>Wyzwalacz</th><th>Czas</th><th>Wynik</th></tr>
+            </thead>
+            <tbody>
+            {% for run in runs %}
+            <tr>
+                <td class="date-cell">{{ run.started_at|localtime }}</td>
+                <td>{{ run.job_id }}</td>
+                <td>{{ "ręcznie" if run.trigger == "manual" else "automatycznie" }}</td>
+                <td class="date-cell">{{ run|duration }}</td>
+                <td><span class="dot dot-{{ 'ok' if run.status == 'ok' else ('warn' if run.status == 'running' else 'error') }}"></span>
+                    <span style="font-size:.85rem;">{{ run.message or "" }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="color:var(--muted);">Jeszcze nic nie uruchomiono.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% if jobs|selectattr("running")|list %}
+<script>setTimeout(() => location.reload(), 3000);</script>
+{% endif %}
+
+{% endblock %}

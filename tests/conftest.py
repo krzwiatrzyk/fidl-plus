@@ -12,6 +12,24 @@ import pytest
 # Importing app.py creates DATA_DIR, so point it at a throwaway directory:
 # tests must never touch or overwrite real data.
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="fidl-tests-"))
+os.environ.setdefault("SCHEDULER_ENABLED", "0")
+
+import db  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def fresh_db(tmp_path):
+    """Every test gets its own empty database."""
+    db.init(str(tmp_path / "fidl.db"))
+
+
+def make_jwt(**claims):
+    """An unsigned JWT - the app only ever reads the payload."""
+    import base64
+    import json
+
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"e30.{payload}.sig"
 
 
 @pytest.fixture

@@ -5,6 +5,10 @@ lidl_tokens.json
 # Personal data - NEVER COMMIT
 receipts.json
 wszystkie_paragony_szczegoly.json
+*.db
+*.db-*
+*.duckdb
+*.migrated
 *.csv
 *.har
 *.pcap

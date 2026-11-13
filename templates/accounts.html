@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Konta - Fidl Plus{% endblock %}
+{% block content %}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+    <h1 style="margin:0;">Konta Lidl Plus</h1>
+    <a href="/login" class="btn btn-primary" style="text-decoration:none;">+ Dodaj konto</a>
+</div>
+
+{% if not accounts %}
+<div class="alert alert-info">
+    Brak kont. <a href="/login" style="color:var(--blue);font-weight:600;">Zaloguj się</a>, aby dodać pierwsze.
+</div>
+{% endif %}
+
+{% for a in accounts %}
+{% set p = progress.get(a.id) %}
+<div class="card" style="margin-bottom:1.25rem;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">
+        <form method="post" action="/accounts/{{ a.id }}/rename" style="display:flex;gap:.5rem;align-items:center;">
+            <span class="dot dot-{{ a.status.level }}"></span>
+            <input name="label" value="{{ a.label }}" aria-label="Nazwa konta"
+                   style="font-size:1.1rem;font-weight:600;border:1px solid transparent;border-radius:6px;padding:.2rem .4rem;"
+                   onfocus="this.style.borderColor='var(--border)'" onblur="this.style.borderColor='transparent'">
+            <button class="btn btn-sm btn-ghost" type="submit">Zapisz nazwę</button>
+        </form>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+            <form method="post" action="/accounts/{{ a.id }}/refresh" class="inline-form">
+                <button class="btn btn-sm btn-ghost" type="submit">Odśwież token</button>
+            </form>
+            <form method="post" action="/accounts/{{ a.id }}/sync" class="inline-form">
+                <button class="btn btn-sm btn-primary" type="submit" {% if p and p.running %}disabled{% endif %}>Synchronizuj</button>
+            </form>
+            <a href="/login?account_id={{ a.id }}" class="btn btn-sm btn-yellow" style="text-decoration:none;">Zaloguj ponownie</a>
+            <form method="post" action="/accounts/{{ a.id }}/delete" class="inline-form"
+                  onsubmit="return confirm('Usunąć konto {{ a.label }} razem z jego paragonami?');">
+                <button class="btn btn-sm btn-danger" type="submit">Usuń</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="table-wrap" style="margin-top:1rem;">
+        <table>
+            <tbody>
+                <tr><td style="width:240px;color:var(--muted);">Status</td>
+                    <td><strong>{{ a.status.text }}</strong>
+                        {% if a.last_error %}<div style="color:var(--red);font-size:.85rem;margin-top:.25rem;">{{ a.last_error }}</div>{% endif %}
+                    </td></tr>
+                <tr><td style="color:var(--muted);">E-mail</td><td>{{ a.email or "-" }}</td></tr>
+                <tr><td style="color:var(--muted);">Access token</td>
+                    <td>{% if a.status.access_valid %}ważny do {{ a.access_expires_at|localtime }} ({{ a.access_expires_at|ago }})
+                        {% elif a.access_expires_at %}wygasł {{ a.access_expires_at|ago }} - zostanie odświeżony przy następnym użyciu
+                        {% else %}-{% endif %}</td></tr>
+                <tr><td style="color:var(--muted);">Refresh token uzyskany</td>
+                    <td>{{ a.refresh_obtained_at|localtime }} ({{ a.refresh_obtained_at|ago }})</td></tr>
+                <tr><td style="color:var(--muted);">Ostatnie odświeżenie tokenu</td>
+                    <td>{{ a.last_refresh_at|localtime }} ({{ a.last_refresh_at|ago }})
+                        {% if a.last_refresh_ok == 1 %}<span class="badge badge-blue">OK</span>
+                        {% elif a.last_refresh_ok == 0 %}<span class="badge" style="background:#fee2e2;color:var(--red);">błąd</span>{% endif %}
+                    </td></tr>
+                <tr><td style="color:var(--muted);">Ostatnia synchronizacja</td>
+                    <td>{{ a.last_sync_at|localtime }} ({{ a.last_sync_at|ago }})
+                        {% if p and p.running %}<span class="badge badge-yellow">trwa: {{ p.count }}/{{ p.total }}</span>
+                        {% elif p and p.error %}<span style="color:var(--red);font-size:.85rem;">{{ p.error }}</span>{% endif %}
+                    </td></tr>
+                <tr><td style="color:var(--muted);">Paragony</td>
+                    <td><a href="/receipts?account={{ a.id }}">{{ a.receipt_count }}</a></td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endfor %}
+
+{% if progress.values()|selectattr("running")|list %}
+<script>setTimeout(() => location.reload(), 3000);</script>
+{% endif %}
+
+{% endblock %}

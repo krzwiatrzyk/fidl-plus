@@ -261,6 +261,29 @@
         /* PRICE UP/DOWN */
         .price-up   { color: var(--red); }
         .price-down { color: #059669; }
+
+        /* ACCOUNTS */
+        nav { flex-wrap: wrap; height: auto; min-height: 56px; row-gap: .4rem; padding-top: .4rem; padding-bottom: .4rem; }
+        .acct-pills { display: flex; gap: .4rem; }
+        .acct-pill {
+            display: inline-flex; align-items: center; gap: .35rem;
+            background: rgba(255,255,255,.12); border-radius: 20px;
+            padding: .2rem .7rem; font-size: .78rem; color: white !important;
+            border-bottom: none !important;
+        }
+        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+        .dot-ok { background: #34d399; }
+        .dot-warn { background: #fbbf24; }
+        .dot-error { background: #f87171; }
+        nav select.acct-filter {
+            background: rgba(255,255,255,.12); color: white; border: none;
+            border-radius: 20px; padding: .3rem .6rem; font-size: .8rem;
+        }
+        nav select.acct-filter option { color: var(--text); }
+        .btn-sm { padding: .35rem .8rem; font-size: .8rem; }
+        .btn-ghost { background: var(--border); color: var(--text); }
+        .btn-danger { background: var(--red); color: white; }
+        .inline-form { display: inline; }
     </style>
 </head>
 <body>
@@ -268,12 +291,35 @@
     <a href="/" class="logo">Fidl+</a>
     <a href="/">Dashboard</a>
     <a href="/receipts">Paragony</a>
-    <a href="/search">Szukaj produktu</a>
+    <a href="/products">Produkty</a>
     <a href="/insights">Insights</a>
     <a href="/top-products">Top produkty</a>
+    <a href="/jobs">Harmonogram</a>
+    {% if radar_enabled %}<a href="/__radar/" target="_blank" rel="noopener" title="Requesty, zapytania SQL i wyjątki (fastapi-radar)">Radar</a>{% endif %}
     <div class="spacer"></div>
+    {% set accounts_nav = nav_accounts() %}
+    {% if accounts_nav|length > 1 %}
+    {% set current = selected_account(request) %}
+    <select class="acct-filter" aria-label="Konto"
+            onchange="const u = new URL(location.href); u.searchParams.set('account', this.value); u.searchParams.delete('page'); location.href = u;">
+        <option value="all">Wszystkie konta</option>
+        {% for a in accounts_nav %}
+        <option value="{{ a.id }}" {% if a.id == current %}selected{% endif %}>{{ a.label }}</option>
+        {% endfor %}
+    </select>
+    {% endif %}
+    <div class="acct-pills">
+        {% for a in accounts_nav %}
+        <a href="/accounts" class="acct-pill"
+           title="{{ a.status.text }} · token odświeżony: {{ a.last_refresh_at|ago }} · ostatnia synchronizacja: {{ a.last_sync_at|ago }}">
+            <span class="dot dot-{{ a.status.level }}"></span>{{ a.label }}
+        </a>
+        {% else %}
+        <a href="/login" class="acct-pill"><span class="dot dot-error"></span>Niezalogowano</a>
+        {% endfor %}
+    </div>
     <a href="/sync" class="nav-btn">Odśwież dane</a>
-    <a href="/login" style="margin-left:.5rem; color:rgba(255,255,255,.7); font-size:.85rem;">Zaloguj</a>
+    <a href="/accounts" style="color:rgba(255,255,255,.7); font-size:.85rem;">Konta</a>
 </nav>
 <div class="container">
     {% block content %}{% endblock %}
