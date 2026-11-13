@@ -12,6 +12,7 @@ import pytest
 # Importing app.py creates DATA_DIR, so point it at a throwaway directory:
 # tests must never touch or overwrite real data.
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="fidl-tests-"))
+os.environ.setdefault("SCHEDULER_ENABLED", "0")
 
 import db  # noqa: E402
 

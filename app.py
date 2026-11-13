@@ -24,10 +24,21 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import db
+import scheduler
 import services
 from receipt_parser import enrich_receipts
 
-app = FastAPI(title="Fidl Plus")
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # In-process scheduler: the app must run as a single uvicorn worker.
+    if scheduler.ENABLED:
+        scheduler.start()
+    yield
+    scheduler.shutdown()
+
+
+app = FastAPI(title="Fidl Plus", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -119,6 +130,16 @@ def _localtime(value: str | None) -> str:
 
 templates.env.filters["ago"] = _ago
 templates.env.filters["localtime"] = _localtime
+
+
+def _duration(run: dict) -> str:
+    if not run.get("finished_at"):
+        return "-"
+    seconds = (datetime.fromisoformat(run["finished_at"]) - datetime.fromisoformat(run["started_at"])).seconds
+    return f"{seconds // 60} min {seconds % 60} s" if seconds >= 60 else f"{seconds} s"
+
+
+templates.env.filters["duration"] = _duration
 
 
 def accounts_with_status() -> list[dict]:
@@ -897,6 +918,23 @@ async def sync_status():
             Kliknij "Rozpocznij pobieranie" aby pobrać paragony.
         </div>
     """)
+
+
+@app.get("/jobs", response_class=HTMLResponse)
+async def jobs_page(request: Request):
+    return templates.TemplateResponse(request=request, name="jobs.html", context={
+        "request": request,
+        "jobs": scheduler.jobs_overview(),
+        "runs": db.recent_runs(),
+        "enabled": scheduler.scheduler.running,
+    })
+
+
+@app.post("/jobs/{job_id}/run")
+async def job_run_now(job_id: str):
+    if job_id in scheduler.JOBS:
+        scheduler.run_now(job_id)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 # ---------------------------------------------------------------------------

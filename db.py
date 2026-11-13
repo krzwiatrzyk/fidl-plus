@@ -35,6 +35,17 @@ CREATE TABLE IF NOT EXISTS receipts (
     raw          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS receipts_account_date ON receipts(account_id, date);
+
+CREATE TABLE IF NOT EXISTS job_runs (
+    id          INTEGER PRIMARY KEY,
+    job_id      TEXT NOT NULL,
+    trigger     TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    status      TEXT NOT NULL,
+    message     TEXT
+);
+CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs(job_id, id);
 """
 
 _path: str | None = None
@@ -216,6 +227,45 @@ def all_receipts() -> list[dict]:
         receipt["_account_label"] = row["label"]
         receipts.append(receipt)
     return receipts
+
+
+# ---------------------------------------------------------------------------
+# Scheduler runs
+# ---------------------------------------------------------------------------
+
+def start_run(job_id: str, trigger: str) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO job_runs (job_id, trigger, started_at, status) VALUES (?, ?, ?, 'running')",
+            (job_id, trigger, now()),
+        )
+        return cur.lastrowid
+
+
+def finish_run(run_id: int, status: str, message: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE job_runs SET finished_at = ?, status = ?, message = ? WHERE id = ?",
+                     (now(), status, message, run_id))
+
+
+def abandon_unfinished_runs() -> None:
+    """Runs still marked as running at startup were cut off by a restart."""
+    with connect() as conn:
+        conn.execute("""UPDATE job_runs SET status = 'error', finished_at = ?,
+                        message = 'Przerwane przez restart aplikacji' WHERE status = 'running'""", (now(),))
+
+
+def last_run(job_id: str) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM job_runs WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+                           (job_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def recent_runs(limit: int = 20) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM job_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
