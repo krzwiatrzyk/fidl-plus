@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Produkty - Fidl Plus{% endblock %}
+{% block content %}
+
+<h1>Produkty <span style="font-size:1rem;font-weight:400;color:var(--muted)">({{ total }})</span></h1>
+
+<div class="card" style="margin-bottom:1.5rem;">
+    <form method="get" action="/products">
+        <div class="search-bar">
+            <input type="text" name="q" value="{{ q }}" placeholder="Filtruj: mleko, chleb, piwo, masło..." autofocus>
+            <input type="hidden" name="sort" value="{{ sort }}">
+            <button class="btn btn-primary" type="submit">Szukaj</button>
+            {% if q %}<a href="/products?sort={{ sort }}" class="btn btn-ghost" style="text-decoration:none;">Wyczyść</a>{% endif %}
+        </div>
+    </form>
+</div>
+
+{% if not products %}
+<div class="alert alert-info">
+    {% if q %}Nie znaleziono produktów pasujących do „<strong>{{ q }}</strong>”.
+    {% else %}Brak produktów - <a href="/sync" style="color:var(--blue);font-weight:600;">pobierz paragony</a>.{% endif %}
+</div>
+{% else %}
+<div class="card">
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    {% for key, label in columns %}
+                    <th>
+                        {% if key %}
+                        <a href="/products?q={{ q|urlencode }}&sort={{ key }}" class="row-link"
+                           {% if sort == key %}style="color:var(--blue);"{% endif %}>
+                            {{ label }}{% if sort == key %} ↓{% endif %}
+                        </a>
+                        {% else %}{{ label }}{% endif %}
+                    </th>
+                    {% endfor %}
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for p in products %}
+            <tr>
+                <td style="font-weight:500;">{{ p.name }}</td>
+                <td><span class="badge badge-blue">{{ p.count }}×</span></td>
+                <td class="amount">{{ "%.2f"|format(p.spend) }} zł</td>
+                <td class="amount">{{ "%.2f"|format(p.last_price) }} zł</td>
+                <td class="amount" style="color:var(--muted);">
+                    {% if p.min_price != p.max_price %}{{ "%.2f"|format(p.min_price) }} – {{ "%.2f"|format(p.max_price) }} zł
+                    {% else %}{{ "%.2f"|format(p.min_price) }} zł{% endif %}
+                </td>
+                <td class="date-cell">{{ p.last_date }}</td>
+                {% if show_account %}
+                <td>{% for label in p.accounts %}<span class="badge badge-blue" style="margin-right:.2rem;">{{ label }}</span>{% endfor %}</td>
+                {% endif %}
+                <td>
+                    <a href="/product?name={{ p.name|urlencode }}" class="badge badge-yellow">Historia cen →</a>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if pages > 1 %}
+    <div class="pagination">
+        {% if page > 1 %}
+        <a href="?q={{ q|urlencode }}&sort={{ sort }}&page={{ page-1 }}">←</a>
+        {% endif %}
+        {% for p in range([1, page-3]|max, [pages+1, page+4]|min) %}
+        {% if p == page %}
+        <span class="current">{{ p }}</span>
+        {% else %}
+        <a href="?q={{ q|urlencode }}&sort={{ sort }}&page={{ p }}">{{ p }}</a>
+        {% endif %}
+        {% endfor %}
+        {% if page < pages %}
+        <a href="?q={{ q|urlencode }}&sort={{ sort }}&page={{ page+1 }}">→</a>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

@@ -35,8 +35,11 @@ def client(api_receipt, html_receipt, tmp_path, monkeypatch):
     "/receipts",
     "/insights",
     "/top-products",
-    "/search?q=kajzerka",
-    "/search?q=",
+    "/products",
+    "/products?q=kajzerka",
+    "/products?q=nic-takiego",
+    "/products?sort=spend&page=2",
+    "/products?sort=bogus",
     "/product?name=Bu%C5%82ka%20kajzerka",
     "/product?name=",
     "/login",
@@ -171,3 +174,14 @@ def test_login_status_reports_the_new_login(client, monkeypatch):
 
     db.store_login({"access_token": "x", "refresh_token": "fresh"})
     assert "Zalogowano" in client.get("/login/status").text
+
+
+def test_search_redirects_to_products(client):
+    response = client.get("/search?q=mleko", follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/products?q=mleko"
+
+
+def test_products_lists_everything_without_a_query(client):
+    body = client.get("/products").text
+    assert "Bułka kajzerka" in body and "Mleko" in body

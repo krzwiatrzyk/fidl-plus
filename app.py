@@ -461,29 +461,47 @@ def get_product_history(receipts: list, name_query: str) -> list:
     return history
 
 
-def search_products(receipts: list, query: str) -> list:
-    """Find unique products matching the query."""
+def all_products(receipts: list, query: str = "") -> list:
+    """
+    Every product ever bought, optionally filtered by name.
+
+    Names are already unified by barcode in enrich_receipts, so grouping by
+    name merges the same product sold under different labels.
+    """
     query_lower = query.lower()
-    seen = {}
-    for receipt in receipts:
+    products = {}
+    for receipt in sorted(receipts, key=lambda r: r.get("date", "")):
+        date = receipt.get("date", "")[:10]
+        account = receipt.get("_account_label")
         for item in receipt.get("itemsLine", []):
             name = item.get("name", "")
-            if query_lower in name.lower():
-                key = name.lower()
-                base_price, promo_price = item_prices(item)
-                if key not in seen:
-                    seen[key] = {
-                        "name": name,
-                        "base_price": base_price,
-                        "last_price": promo_price,
-                        "count": 1,
-                    }
-                else:
-                    seen[key]["count"] += 1
-                    seen[key]["base_price"] = base_price
-                    seen[key]["last_price"] = promo_price
-    results = sorted(seen.values(), key=lambda x: x["count"], reverse=True)
-    return results[:50]
+            if not name or query_lower not in name.lower():
+                continue
+            base_price, promo_price = item_prices(item)
+            qty = parse_price(item.get("quantity", 1)) or 1.0
+            p = products.setdefault(name.lower(), {
+                "name": name, "count": 0, "spend": 0.0, "min_price": promo_price,
+                "max_price": promo_price, "accounts": [],
+            })
+            p["count"] += 1
+            p["spend"] += promo_price * qty
+            p["base_price"] = base_price
+            p["last_price"] = promo_price
+            p["last_date"] = date
+            p["min_price"] = min(p["min_price"], promo_price)
+            p["max_price"] = max(p["max_price"], promo_price)
+            if account and account not in p["accounts"]:
+                p["accounts"].append(account)
+    return sorted(products.values(), key=lambda x: x["count"], reverse=True)
+
+
+PRODUCT_SORTS = {
+    "count": (lambda p: p["count"], True),
+    "name": (lambda p: p["name"].lower(), False),
+    "spend": (lambda p: p["spend"], True),
+    "last_price": (lambda p: p["last_price"], True),
+    "last_date": (lambda p: p["last_date"], True),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -630,14 +648,41 @@ async def top_products(request: Request):
     })
 
 
-@app.get("/search", response_class=HTMLResponse)
-async def search(request: Request, q: str = Query("")):
-    receipts = scoped_receipts(request)
-    results = search_products(receipts, q) if q else []
-    return templates.TemplateResponse(request=request, name="search.html", context={
+@app.get("/search")
+async def search(q: str = Query("")):
+    return RedirectResponse(f"/products?q={quote(q)}", status_code=301)
+
+
+@app.get("/products", response_class=HTMLResponse)
+async def products(
+    request: Request,
+    q: str = Query(""),
+    sort: str = Query("count"),
+    page: int = Query(1, ge=1),
+):
+    if sort not in PRODUCT_SORTS:
+        sort = "count"
+    key, reverse = PRODUCT_SORTS[sort]
+    found = sorted(all_products(scoped_receipts(request), q), key=key, reverse=reverse)
+
+    per_page = 50
+    pages = max(1, (len(found) + per_page - 1) // per_page)
+    show_account = selected_account(request) is None and len(db.list_accounts()) > 1
+    columns = [("name", "Produkt"), ("count", "Zakupów"), ("spend", "Wydano"),
+               ("last_price", "Ostatnia cena"), (None, "Zakres cen"), ("last_date", "Ostatnio")]
+    if show_account:
+        columns.append((None, "Konta"))
+
+    return templates.TemplateResponse(request=request, name="products.html", context={
         "request": request,
         "q": q,
-        "results": results,
+        "sort": sort,
+        "page": page,
+        "pages": pages,
+        "total": len(found),
+        "products": found[(page - 1) * per_page : page * per_page],
+        "columns": columns,
+        "show_account": show_account,
     })
 
 
