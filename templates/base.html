@@ -271,15 +271,11 @@
             padding: .2rem .7rem; font-size: .78rem; color: white !important;
             border-bottom: none !important;
         }
+        .acct-pill.active { background: white; color: var(--text) !important; font-weight: 600; }
         .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
         .dot-ok { background: #34d399; }
         .dot-warn { background: #fbbf24; }
         .dot-error { background: #f87171; }
-        nav select.acct-filter {
-            background: rgba(255,255,255,.12); color: white; border: none;
-            border-radius: 20px; padding: .3rem .6rem; font-size: .8rem;
-        }
-        nav select.acct-filter option { color: var(--text); }
         .btn-sm { padding: .35rem .8rem; font-size: .8rem; }
         .btn-ghost { background: var(--border); color: var(--text); }
         .btn-danger { background: var(--red); color: white; }
@@ -298,19 +294,15 @@
     {% if radar_enabled %}<a href="/__radar/" target="_blank" rel="noopener" title="Requesty, zapytania SQL i wyjątki (fastapi-radar)">Radar</a>{% endif %}
     <div class="spacer"></div>
     {% set accounts_nav = nav_accounts() %}
-    {% if accounts_nav|length > 1 %}
+    {% set filtering = accounts_nav|length > 1 %}
     {% set current = selected_account(request) %}
-    <select class="acct-filter" aria-label="Konto"
-            onchange="const u = new URL(location.href); u.searchParams.set('account', this.value); u.searchParams.delete('page'); location.href = u;">
-        <option value="all">Wszystkie konta</option>
+    <div class="acct-pills" aria-label="Konto">
+        {% if filtering %}
+        <a href="{{ url_with(request, account='all') }}" class="acct-pill {% if current is none %}active{% endif %}">Wszystkie</a>
+        {% endif %}
         {% for a in accounts_nav %}
-        <option value="{{ a.id }}" {% if a.id == current %}selected{% endif %}>{{ a.label }}</option>
-        {% endfor %}
-    </select>
-    {% endif %}
-    <div class="acct-pills">
-        {% for a in accounts_nav %}
-        <a href="/accounts" class="acct-pill"
+        <a href="{{ url_with(request, account=a.id) if filtering else '/accounts' }}"
+           class="acct-pill {% if filtering and a.id == current %}active{% endif %}"
            title="{{ a.status.text }} · token odświeżony: {{ a.last_refresh_at|ago }} · ostatnia synchronizacja: {{ a.last_sync_at|ago }}">
             <span class="dot dot-{{ a.status.level }}"></span>{{ a.label }}
         </a>

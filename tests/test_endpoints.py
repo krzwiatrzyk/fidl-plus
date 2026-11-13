@@ -150,6 +150,18 @@ def test_account_filter_limits_receipts_and_is_remembered(client, two_accounts):
     assert "Lidl Testowa 1" not in client.get("/receipts").text
 
 
+def test_account_pills_reload_the_current_page_for_that_account(client, two_accounts):
+    body = client.get("/insights?account=all&page=3").text
+    assert f'href="/insights?account={two_accounts}"' in body
+    assert 'href="/insights?account=all" class="acct-pill active"' in body
+
+
+def test_single_account_pill_links_to_accounts(client):
+    body = client.get("/insights").text
+    assert 'href="/accounts"\n           class="acct-pill' in body
+    assert "Wszystkie</a>" not in body
+
+
 def test_dashboard_shows_spend_per_account(client, two_accounts):
     body = client.get("/?account=all").text
     assert "Żona" in body

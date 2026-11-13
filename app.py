@@ -15,7 +15,7 @@ import sys
 import threading
 from collections import defaultdict
 from datetime import UTC, datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import uvicorn
 from fastapi import FastAPI, Form, Query, Request
@@ -172,8 +172,20 @@ def selected_account(request: Request) -> int | None:
     return int(value) if value.isdigit() else None
 
 
+def url_with(request: Request, **params) -> str:
+    """The current page with some query params replaced; None drops one. Always back to page 1."""
+    query = {k: v for k, v in request.query_params.items() if k != "page"}
+    for key, value in params.items():
+        if value is None:
+            query.pop(key, None)
+        else:
+            query[key] = str(value)
+    return f"{request.url.path}?{urlencode(query)}" if query else request.url.path
+
+
 templates.env.globals["nav_accounts"] = accounts_with_status
 templates.env.globals["selected_account"] = selected_account
+templates.env.globals["url_with"] = url_with
 
 
 @app.middleware("http")
